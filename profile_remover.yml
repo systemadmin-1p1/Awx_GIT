@@ -1,0 +1,46 @@
+---
+- name: Delete old OPO user profiles from /home
+  hosts: all
+  become: yes
+  gather_facts: no
+
+  vars:
+    home_dir: /home
+    protected_users:
+      - root
+      - opoadmin
+
+  tasks:
+
+    - name: Find OPO user directories
+      ansible.builtin.find:
+        paths: "{{ home_dir }}"
+        file_type: directory
+        recurse: no
+        patterns: "opo*"
+      register: opo_dirs
+
+    - name: Filter only valid OPO numeric directories
+      ansible.builtin.set_fact:
+        delete_dirs: >-
+          {{
+            opo_dirs.files
+            | map(attribute='path')
+            | select('match', '^/home/opo[0-9]+$')
+            | reject('match', '^/home/root$')
+            | reject('match', '^/home/opoadmin$')
+            | list
+          }}
+
+    - name: Show directories to be deleted
+      ansible.builtin.debug:
+        var: delete_dirs
+
+    - name: Delete OPO profile directories
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop: "{{ delete_dirs }}"
+      when:
+        - item is match('^/home/opo[0-9]+$')
+        - item.startswith('/home/')
