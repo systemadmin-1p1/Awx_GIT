@@ -1,0 +1,29 @@
+```yaml
+---
+- name: Regenerate Machine ID
+  hosts: all
+  become: yes
+  gather_facts: no
+
+  tasks:
+    - name: Remove existing machine-id files
+      file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /etc/machine-id
+        - /var/lib/dbus/machine-id
+
+    - name: Generate new machine-id
+      command: systemd-machine-id-setup
+      register: machine_id_result
+      changed_when: machine_id_result.rc == 0
+
+    - name: Display generated machine-id
+      command: cat /etc/machine-id
+      register: machine_id
+
+    - name: Show machine-id
+      debug:
+        msg: "New Machine ID: {{ machine_id.stdout }}"
+```
