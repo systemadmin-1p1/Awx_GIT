@@ -1,0 +1,57 @@
+---
+- name: Safely remove Salt Minion
+  hosts: all
+  become: yes
+  gather_facts: yes
+
+  tasks:
+
+    - name: Check if salt-minion package is installed
+      shell: dpkg -s salt-minion >/dev/null 2>&1
+      register: salt_installed
+      ignore_errors: yes
+      changed_when: false
+
+    - name: Display status
+      debug:
+        msg: "salt-minion is installed. Proceeding with removal."
+      when: salt_installed.rc == 0
+
+    - name: Stop salt-minion service
+      systemd:
+        name: salt-minion
+        state: stopped
+      when: salt_installed.rc == 0
+      ignore_errors: yes
+
+    - name: Disable salt-minion service
+      systemd:
+        name: salt-minion
+        enabled: no
+      when: salt_installed.rc == 0
+      ignore_errors: yes
+
+    - name: Remove salt-minion package
+      apt:
+        name: salt-minion
+        state: absent
+        purge: yes
+        autoremove: yes
+      when: salt_installed.rc == 0
+
+    - name: Remove salt-minion configuration directory
+      file:
+        path: /etc/salt/minion.d
+        state: absent
+      when: salt_installed.rc == 0
+
+    - name: Remove salt-minion PID file
+      file:
+        path: /var/run/salt-minion.pid
+        state: absent
+      when: salt_installed.rc == 0
+
+    - name: Display message if salt-minion is not installed
+      debug:
+        msg: "salt-minion is not installed. No changes made."
+      when: salt_installed.rc != 0
