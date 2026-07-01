@@ -1,4 +1,3 @@
-```yaml
 ---
 - name: Regenerate Machine ID
   hosts: all
@@ -19,11 +18,11 @@
       register: machine_id_result
       changed_when: machine_id_result.rc == 0
 
-    - name: Display generated machine-id
+    - name: Read machine-id
       command: cat /etc/machine-id
       register: machine_id
+      changed_when: false
 
     - name: Show machine-id
       debug:
         msg: "New Machine ID: {{ machine_id.stdout }}"
-```
