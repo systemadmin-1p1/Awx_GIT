@@ -31,7 +31,7 @@
       when: salt_installed.rc == 0
       ignore_errors: yes
 
-    - name: Remove salt-minion package
+    - name: Purge salt-minion package
       apt:
         name: salt-minion
         state: absent
@@ -39,19 +39,57 @@
         autoremove: yes
       when: salt_installed.rc == 0
 
-    - name: Remove salt-minion configuration directory
+    - name: Remove all Salt Minion directories
       file:
-        path: /etc/salt/minion.d
+        path: "{{ item }}"
         state: absent
+      loop:
+        - /etc/salt
+        - /var/cache/salt
+        - /var/lib/salt
+        - /var/log/salt
+        - /var/run/salt
+        - /run/salt
       when: salt_installed.rc == 0
 
-    - name: Remove salt-minion PID file
+    - name: Remove Salt Minion PID file
       file:
         path: /var/run/salt-minion.pid
         state: absent
       when: salt_installed.rc == 0
+      ignore_errors: yes
+
+    - name: Remove Salt repository list (if present)
+      file:
+        path: /etc/apt/sources.list.d/salt.list
+        state: absent
+      when: salt_installed.rc == 0
+      ignore_errors: yes
+
+    - name: Remove Salt repository keyring (if present)
+      file:
+        path: /etc/apt/keyrings/salt-archive-keyring.gpg
+        state: absent
+      when: salt_installed.rc == 0
+      ignore_errors: yes
+
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+      when: salt_installed.rc == 0
+
+    - name: Verify salt-minion removal
+      shell: dpkg -s salt-minion >/dev/null 2>&1
+      register: verify_removal
+      ignore_errors: yes
+      changed_when: false
+
+    - name: Display success message
+      debug:
+        msg: "Salt Minion has been completely removed from the server."
+      when: verify_removal.rc != 0
 
     - name: Display message if salt-minion is not installed
       debug:
-        msg: "salt-minion is not installed. No changes made."
+        msg: "salt-minion is not installed. No changes were made."
       when: salt_installed.rc != 0
