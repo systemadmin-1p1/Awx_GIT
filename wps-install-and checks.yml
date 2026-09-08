@@ -5,30 +5,136 @@
   gather_facts: true
 
   tasks:
+
+    # ---------------------------------------------------------
+    # 1. Check SSH connectivity
+    # ---------------------------------------------------------
+    - name: Verify host is reachable
+      ansible.builtin.ping:
+      register: host_ping
+      ignore_unreachable: true
+
+    - name: Stop processing unreachable host
+      ansible.builtin.meta: end_host
+      when: host_ping.unreachable | default(false)
+
+    # ---------------------------------------------------------
+    # 2. Check Ubuntu repository connectivity
+    # ---------------------------------------------------------
+    - name: Check Ubuntu repository connectivity
+      ansible.builtin.uri:
+        url: https://archive.ubuntu.com/ubuntu/
+        method: HEAD
+        timeout: 10
+        status_code:
+          - 200
+          - 301
+          - 302
+      register: ubuntu_repo
+      failed_when: false
+      changed_when: false
+
+    - name: Display Ubuntu repository connectivity
+      ansible.builtin.debug:
+        msg: >-
+          Ubuntu repository connectivity:
+          {{
+            'AVAILABLE'
+            if ubuntu_repo.status | default(0) in [200, 301, 302]
+            else 'NOT AVAILABLE'
+          }}
+
+    # ---------------------------------------------------------
+    # 3. Check APT proxy configuration
+    # ---------------------------------------------------------
+    - name: Check APT proxy configuration
+      ansible.builtin.shell: |
+        apt-config dump | grep -i proxy || true
+      register: apt_proxy
+      changed_when: false
+
+    - name: Display APT proxy configuration
+      ansible.builtin.debug:
+        msg: "{{ apt_proxy.stdout | default('No APT proxy configured') }}"
+
+    # ---------------------------------------------------------
+    # 4. Update APT cache
+    # ---------------------------------------------------------
+    - name: Update APT cache
+      ansible.builtin.apt:
+        update_cache: true
+        cache_valid_time: 3600
+      register: apt_update
+      retries: 3
+      delay: 10
+      until: apt_update is succeeded
+      when: ubuntu_repo.status | default(0) in [200, 301, 302]
+
+    # ---------------------------------------------------------
+    # 5. Install snapd
+    # ---------------------------------------------------------
     - name: Ensure snapd is installed
       ansible.builtin.apt:
         name: snapd
         state: present
+      register: snapd_install
+      retries: 3
+      delay: 10
+      until: snapd_install is succeeded
+      when: ubuntu_repo.status | default(0) in [200, 301, 302]
 
+    # ---------------------------------------------------------
+    # 6. Check if snapd was installed
+    # ---------------------------------------------------------
+    - name: Check snapd installation
+      ansible.builtin.command: snap version
+      register: snap_version
+      changed_when: false
+      failed_when: false
+
+    - name: Display snapd status
+      ansible.builtin.debug:
+        msg: >-
+          {{
+            'snapd is available: ' + snap_version.stdout
+            if snap_version.rc == 0
+            else 'snapd is NOT available'
+          }}
+
+    # ---------------------------------------------------------
+    # 7. Enable and start snapd
+    # ---------------------------------------------------------
     - name: Ensure snapd service is enabled and running
       ansible.builtin.systemd:
         name: snapd
-        enabled: yes
+        enabled: true
         state: started
+      when: snap_version.rc == 0
 
+    # ---------------------------------------------------------
+    # 8. Enable and start snapd.socket
+    # ---------------------------------------------------------
     - name: Ensure snapd.socket is enabled and running
       ansible.builtin.systemd:
         name: snapd.socket
-        enabled: yes
+        enabled: true
         state: started
+      when: snap_version.rc == 0
 
+    # ---------------------------------------------------------
+    # 9. Ensure /snap symlink exists
+    # ---------------------------------------------------------
     - name: Ensure /snap symlink exists
       ansible.builtin.file:
         src: /var/lib/snapd/snap
         dest: /snap
         state: link
         force: true
+      when: snap_version.rc == 0
 
+    # ---------------------------------------------------------
+    # 10. Wait for snap to become available
+    # ---------------------------------------------------------
     - name: Wait for snap to become available
       ansible.builtin.command: snap version
       register: snap_ready
@@ -36,23 +142,50 @@
       delay: 3
       until: snap_ready.rc == 0
       changed_when: false
+      when: snap_version.rc == 0
 
+    # ---------------------------------------------------------
+    # 11. Check whether WPS Office is already installed
+    # ---------------------------------------------------------
     - name: Check if WPS Office is already installed
       ansible.builtin.command: snap list wps-office-multilang
       register: wps_installed
       failed_when: false
       changed_when: false
+      when: snap_ready.rc | default(1) == 0
 
+    # ---------------------------------------------------------
+    # 12. Install WPS Office
+    # ---------------------------------------------------------
     - name: Install WPS Office
       ansible.builtin.command: snap install wps-office-multilang
-      when: wps_installed.rc != 0
+      when:
+        - snap_ready.rc | default(1) == 0
+        - wps_installed.rc | default(1) != 0
       register: wps_install
 
+    # ---------------------------------------------------------
+    # 13. Verify WPS Office installation
+    # ---------------------------------------------------------
+    - name: Verify WPS Office installation
+      ansible.builtin.command: snap list wps-office-multilang
+      register: wps_verify
+      failed_when: false
+      changed_when: false
+      when: snap_ready.rc | default(1) == 0
+
+    # ---------------------------------------------------------
+    # 14. Display final installation status
+    # ---------------------------------------------------------
     - name: Display installation status
       ansible.builtin.debug:
         msg: >-
-          {% if wps_installed.rc == 0 %}
+          {% if snap_ready.rc | default(1) != 0 %}
+          WPS Office installation skipped because snapd is not available.
+          {% elif wps_installed.rc | default(1) == 0 %}
           WPS Office is already installed. Skipping installation.
-          {% else %}
+          {% elif wps_verify.rc | default(1) == 0 %}
           WPS Office installed successfully.
+          {% else %}
+          WPS Office installation failed. Please check the snap logs.
           {% endif %}
