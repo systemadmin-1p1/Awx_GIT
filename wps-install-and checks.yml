@@ -1,96 +1,77 @@
 ---
-- name: Install Snapd and WPS Office
+- name: Install WPS Office
   hosts: all
   become: true
   gather_facts: true
 
-  vars:
-    corporate_proxy: "http://172.24.11.7:8080"
-
   tasks:
 
-    # ==========================================================
-    # 1. Configure proxy environment
-    # ==========================================================
+    - name: Unset all proxy variables
+      ansible.builtin.shell: |
+        unset http_proxy
+        unset https_proxy
+        unset ftp_proxy
+        unset HTTP_PROXY
+        unset HTTPS_PROXY
+        unset FTP_PROXY
+        unset ALL_PROXY
+        unset all_proxy
+      changed_when: false
 
-    - name: Configure proxy in /etc/environment
-      ansible.builtin.blockinfile:
-        path: /etc/environment
-        marker: "# {mark} ANSIBLE CORPORATE PROXY"
-        block: |
-          http_proxy={{ corporate_proxy }}
-          https_proxy={{ corporate_proxy }}
-          ftp_proxy={{ corporate_proxy }}
-          HTTP_PROXY={{ corporate_proxy }}
-          HTTPS_PROXY={{ corporate_proxy }}
-          FTP_PROXY={{ corporate_proxy }}
-          no_proxy=localhost,127.0.0.1,.1p1.local,.1point1.com,.1point1.in,.1p1.in,172.18.0.0/16,192.168.0.0/16,172.21.11.0/24,172.24.11.0/24
+    - name: Remove proxy variables from current Ansible environment
+      ansible.builtin.set_fact:
+        ansible_http_proxy: ""
+        ansible_https_proxy: ""
 
-    # ==========================================================
-    # 2. Configure APT proxy
-    # ==========================================================
-
-    - name: Configure APT HTTP proxy
-      ansible.builtin.copy:
-        dest: /etc/apt/apt.conf.d/80proxy
-        owner: root
-        group: root
-        mode: "0644"
-        content: |
-          Acquire::http::Proxy "http://172.24.11.7:8080";
-          Acquire::https::Proxy "http://172.24.11.7:8080";
-
-    # ==========================================================
-    # 3. Test proxy
-    # ==========================================================
-
-    - name: Test HTTPS through corporate proxy
+    - name: Check direct Internet access
       ansible.builtin.command:
-        cmd: curl -I -L --connect-timeout 15 https://dl.google.com
+        cmd: curl -I -L --connect-timeout 10 https://api.snapcraft.io
       environment:
-        http_proxy: "{{ corporate_proxy }}"
-        https_proxy: "{{ corporate_proxy }}"
-        HTTP_PROXY: "{{ corporate_proxy }}"
-        HTTPS_PROXY: "{{ corporate_proxy }}"
-      register: proxy_test
+        http_proxy: ""
+        https_proxy: ""
+        ftp_proxy: ""
+        HTTP_PROXY: ""
+        HTTPS_PROXY: ""
+        ALL_PROXY: ""
+        all_proxy: ""
+      register: internet_test
       changed_when: false
       failed_when: false
 
-    - name: Display proxy test
+    - name: Show Internet test
       ansible.builtin.debug:
         msg:
-          - "Proxy return code: {{ proxy_test.rc }}"
-          - "{{ proxy_test.stdout_lines }}"
+          - "Return code: {{ internet_test.rc }}"
+          - "{{ internet_test.stdout_lines }}"
 
-    # ==========================================================
-    # 4. Update APT
-    # ==========================================================
-
-    - name: Update APT cache
+    - name: Update APT cache without proxy
       ansible.builtin.apt:
         update_cache: true
-        cache_valid_time: 3600
-      register: apt_update
-      retries: 3
-      delay: 5
-      until: apt_update is succeeded
+      environment:
+        http_proxy: ""
+        https_proxy: ""
+        ftp_proxy: ""
+        HTTP_PROXY: ""
+        HTTPS_PROXY: ""
+        ALL_PROXY: ""
+        all_proxy: ""
 
-    # ==========================================================
-    # 5. Install snapd
-    # ==========================================================
-
-    - name: Install snapd
+    - name: Install snapd without proxy
       ansible.builtin.apt:
         name: snapd
         state: present
+      environment:
+        http_proxy: ""
+        https_proxy: ""
+        ftp_proxy: ""
+        HTTP_PROXY: ""
+        HTTPS_PROXY: ""
+        ALL_PROXY: ""
+        all_proxy: ""
 
-    # ==========================================================
-    # 6. Start snapd
-    # ==========================================================
-
-    - name: Enable snapd service
+    - name: Enable snapd
       ansible.builtin.systemd:
-        name: snapd.service
+        name: snapd
         enabled: true
         state: started
 
@@ -100,100 +81,46 @@
         enabled: true
         state: started
 
-    # ==========================================================
-    # 7. Configure proxy for snapd
-    # ==========================================================
-
-    - name: Create snapd systemd override directory
-      ansible.builtin.file:
-        path: /etc/systemd/system/snapd.service.d
-        state: directory
-        owner: root
-        group: root
-        mode: "0755"
-
-    - name: Configure proxy for snapd
-      ansible.builtin.copy:
-        dest: /etc/systemd/system/snapd.service.d/proxy.conf
-        owner: root
-        group: root
-        mode: "0644"
-        content: |
-          [Service]
-          Environment="http_proxy=http://172.24.11.7:8080"
-          Environment="https_proxy=http://172.24.11.7:8080"
-          Environment="HTTP_PROXY=http://172.24.11.7:8080"
-          Environment="HTTPS_PROXY=http://172.24.11.7:8080"
-          Environment="no_proxy=localhost,127.0.0.1,172.24.11.0/24"
-
-    - name: Reload systemd
-      ansible.builtin.systemd:
-        daemon_reload: true
-
-    - name: Restart snapd
-      ansible.builtin.systemd:
-        name: snapd
-        state: restarted
-
-    # ==========================================================
-    # 8. Wait for snapd
-    # ==========================================================
-
     - name: Wait for snapd
       ansible.builtin.command:
         cmd: snap version
-      register: snap_ready
+      register: snap_version
       retries: 12
       delay: 5
-      until: snap_ready.rc == 0
+      until: snap_version.rc == 0
       changed_when: false
 
-    - name: Display snap version
-      ansible.builtin.debug:
-        var: snap_ready.stdout_lines
-
-    # ==========================================================
-    # 9. Check WPS
-    # ==========================================================
-
-    - name: Check WPS installation
+    - name: Check WPS
       ansible.builtin.command:
         cmd: snap list wps-2019-snap
       register: wps_check
       changed_when: false
       failed_when: false
 
-    # ==========================================================
-    # 10. Install WPS
-    # ==========================================================
-
-    - name: Install WPS Office
+    - name: Install WPS Office without proxy
       ansible.builtin.command:
         cmd: snap install wps-2019-snap
       register: wps_install
-      when:
-        - wps_check.rc != 0
+      when: wps_check.rc != 0
+      environment:
+        http_proxy: ""
+        https_proxy: ""
+        ftp_proxy: ""
+        HTTP_PROXY: ""
+        HTTPS_PROXY: ""
+        ALL_PROXY: ""
+        all_proxy: ""
 
-    # ==========================================================
-    # 11. Verify WPS
-    # ==========================================================
-
-    - name: Verify WPS Office
+    - name: Verify WPS
       ansible.builtin.command:
         cmd: snap list wps-2019-snap
       register: wps_verify
       changed_when: false
       failed_when: false
 
-    # ==========================================================
-    # 12. Final result
-    # ==========================================================
-
-    - name: Installation result
+    - name: Final result
       ansible.builtin.debug:
         msg:
-          - "=========================================="
-          - "SERVER : {{ inventory_hostname }}"
-          - "SNAPD  : {{ 'READY' if snap_ready.rc == 0 else 'FAILED' }}"
-          - "WPS    : {{ 'INSTALLED' if wps_verify.rc == 0 else 'NOT INSTALLED' }}"
-          - "=========================================="
+          - "SERVER: {{ inventory_hostname }}"
+          - "SNAPD: {{ 'READY' if snap_version.rc == 0 else 'FAILED' }}"
+          - "WPS: {{ 'INSTALLED' if wps_verify.rc == 0 else 'NOT INSTALLED' }}"
