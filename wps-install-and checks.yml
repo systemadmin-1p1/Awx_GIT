@@ -1,126 +1,259 @@
 ---
-- name: Install WPS Office
+- name: Install WPS Office without Puppet proxy
   hosts: all
   become: true
   gather_facts: true
 
   tasks:
 
-    - name: Unset all proxy variables
-      ansible.builtin.shell: |
-        unset http_proxy
-        unset https_proxy
-        unset ftp_proxy
-        unset HTTP_PROXY
-        unset HTTPS_PROXY
-        unset FTP_PROXY
-        unset ALL_PROXY
-        unset all_proxy
-      changed_when: false
+    # ==========================================================
+    # 1. Stop Puppet
+    # ==========================================================
 
-    - name: Remove proxy variables from current Ansible environment
-      ansible.builtin.set_fact:
-        ansible_http_proxy: ""
-        ansible_https_proxy: ""
-
-    - name: Check direct Internet access
-      ansible.builtin.command:
-        cmd: curl -I -L --connect-timeout 10 https://api.snapcraft.io
-      environment:
-        http_proxy: ""
-        https_proxy: ""
-        ftp_proxy: ""
-        HTTP_PROXY: ""
-        HTTPS_PROXY: ""
-        ALL_PROXY: ""
-        all_proxy: ""
-      register: internet_test
-      changed_when: false
-      failed_when: false
-
-    - name: Show Internet test
-      ansible.builtin.debug:
-        msg:
-          - "Return code: {{ internet_test.rc }}"
-          - "{{ internet_test.stdout_lines }}"
-
-    - name: Update APT cache without proxy
-      ansible.builtin.apt:
-        update_cache: true
-      environment:
-        http_proxy: ""
-        https_proxy: ""
-        ftp_proxy: ""
-        HTTP_PROXY: ""
-        HTTPS_PROXY: ""
-        ALL_PROXY: ""
-        all_proxy: ""
-
-    - name: Install snapd without proxy
-      ansible.builtin.apt:
-        name: snapd
-        state: present
-      environment:
-        http_proxy: ""
-        https_proxy: ""
-        ftp_proxy: ""
-        HTTP_PROXY: ""
-        HTTPS_PROXY: ""
-        ALL_PROXY: ""
-        all_proxy: ""
-
-    - name: Enable snapd
+    - name: Stop Puppet service
       ansible.builtin.systemd:
-        name: snapd
-        enabled: true
-        state: started
-
-    - name: Enable snapd socket
-      ansible.builtin.systemd:
-        name: snapd.socket
-        enabled: true
-        state: started
-
-    - name: Wait for snapd
-      ansible.builtin.command:
-        cmd: snap version
-      register: snap_version
-      retries: 12
-      delay: 5
-      until: snap_version.rc == 0
-      changed_when: false
-
-    - name: Check WPS
-      ansible.builtin.command:
-        cmd: snap list wps-2019-snap
-      register: wps_check
-      changed_when: false
+        name: puppet
+        state: stopped
+      register: puppet_stop
       failed_when: false
 
-    - name: Install WPS Office without proxy
-      ansible.builtin.command:
-        cmd: snap install wps-2019-snap
-      register: wps_install
-      when: wps_check.rc != 0
-      environment:
-        http_proxy: ""
-        https_proxy: ""
-        ftp_proxy: ""
-        HTTP_PROXY: ""
-        HTTPS_PROXY: ""
-        ALL_PROXY: ""
-        all_proxy: ""
-
-    - name: Verify WPS
-      ansible.builtin.command:
-        cmd: snap list wps-2019-snap
-      register: wps_verify
-      changed_when: false
-      failed_when: false
-
-    - name: Final result
+    - name: Display Puppet status
       ansible.builtin.debug:
-        msg:
-          - "SERVER: {{ inventory_hostname }}"
-          - "SNAPD: {{ 'READY' if snap_version.rc == 0 else 'FAILED' }}"
-          - "WPS: {{ 'INSTALLED' if wps_verify.rc == 0 else 'NOT INSTALLED' }}"
+        msg: "Puppet service stopped on {{ inventory_hostname }}"
+
+    # ==========================================================
+    # Everything below runs while Puppet is stopped
+    # ==========================================================
+
+    - name: Install WPS while Puppet is stopped
+      block:
+
+        # ------------------------------------------------------
+        # 2. Check current proxy
+        # ------------------------------------------------------
+
+        - name: Show current proxy variables
+          ansible.builtin.shell: |
+            env | grep -i proxy || true
+          register: proxy_before
+          changed_when: false
+
+        - name: Display current proxy
+          ansible.builtin.debug:
+            var: proxy_before.stdout_lines
+
+        # ------------------------------------------------------
+        # 3. Remove proxy configuration from environment
+        # ------------------------------------------------------
+
+        - name: Remove proxy entries from /etc/environment
+          ansible.builtin.lineinfile:
+            path: /etc/environment
+            regexp: '^(http_proxy|https_proxy|ftp_proxy|HTTP_PROXY|HTTPS_PROXY|FTP_PROXY|ALL_PROXY|all_proxy)='
+            state: absent
+
+        # ------------------------------------------------------
+        # 4. Remove APT proxy configuration if present
+        # ------------------------------------------------------
+
+        - name: Remove APT proxy configuration
+          ansible.builtin.file:
+            path: /etc/apt/apt.conf.d/80proxy
+            state: absent
+
+        # ------------------------------------------------------
+        # 5. Unset proxy for commands
+        # ------------------------------------------------------
+
+        - name: Test direct Internet without proxy
+          ansible.builtin.command:
+            cmd: curl -I -L --connect-timeout 15 https://api.snapcraft.io
+          environment:
+            http_proxy: ""
+            https_proxy: ""
+            ftp_proxy: ""
+            HTTP_PROXY: ""
+            HTTPS_PROXY: ""
+            FTP_PROXY: ""
+            ALL_PROXY: ""
+            all_proxy: ""
+          register: direct_internet
+          changed_when: false
+          failed_when: false
+
+        - name: Display direct Internet result
+          ansible.builtin.debug:
+            msg:
+              - "Return code: {{ direct_internet.rc }}"
+              - "{{ direct_internet.stdout_lines }}"
+
+        # ------------------------------------------------------
+        # 6. Update APT without proxy
+        # ------------------------------------------------------
+
+        - name: Update APT cache without proxy
+          ansible.builtin.apt:
+            update_cache: true
+          environment:
+            http_proxy: ""
+            https_proxy: ""
+            ftp_proxy: ""
+            HTTP_PROXY: ""
+            HTTPS_PROXY: ""
+            FTP_PROXY: ""
+            ALL_PROXY: ""
+            all_proxy: ""
+
+        # ------------------------------------------------------
+        # 7. Install snapd
+        # ------------------------------------------------------
+
+        - name: Install snapd
+          ansible.builtin.apt:
+            name: snapd
+            state: present
+          environment:
+            http_proxy: ""
+            https_proxy: ""
+            ftp_proxy: ""
+            HTTP_PROXY: ""
+            HTTPS_PROXY: ""
+            FTP_PROXY: ""
+            ALL_PROXY: ""
+            all_proxy: ""
+
+        # ------------------------------------------------------
+        # 8. Enable snapd
+        # ------------------------------------------------------
+
+        - name: Enable snapd service
+          ansible.builtin.systemd:
+            name: snapd.service
+            enabled: true
+            state: started
+
+        - name: Enable snapd socket
+          ansible.builtin.systemd:
+            name: snapd.socket
+            enabled: true
+            state: started
+
+        # ------------------------------------------------------
+        # 9. Wait for snapd
+        # ------------------------------------------------------
+
+        - name: Wait for snapd
+          ansible.builtin.command:
+            cmd: snap version
+          register: snap_version
+          retries: 12
+          delay: 5
+          until: snap_version.rc == 0
+          changed_when: false
+
+        - name: Display snap version
+          ansible.builtin.debug:
+            var: snap_version.stdout_lines
+
+        # ------------------------------------------------------
+        # 10. Check WPS
+        # ------------------------------------------------------
+
+        - name: Check whether WPS is already installed
+          ansible.builtin.command:
+            cmd: snap list wps-2019-snap
+          register: wps_check
+          changed_when: false
+          failed_when: false
+
+        # ------------------------------------------------------
+        # 11. Install WPS
+        # ------------------------------------------------------
+
+        - name: Install WPS Office
+          ansible.builtin.command:
+            cmd: snap install wps-2019-snap
+          register: wps_install
+          when: wps_check.rc != 0
+          environment:
+            http_proxy: ""
+            https_proxy: ""
+            ftp_proxy: ""
+            HTTP_PROXY: ""
+            HTTPS_PROXY: ""
+            FTP_PROXY: ""
+            ALL_PROXY: ""
+            all_proxy: ""
+
+        # ------------------------------------------------------
+        # 12. Verify WPS
+        # ------------------------------------------------------
+
+        - name: Verify WPS Office
+          ansible.builtin.command:
+            cmd: snap list wps-2019-snap
+          register: wps_verify
+          changed_when: false
+          failed_when: false
+
+        - name: Check WPS desktop launcher
+          ansible.builtin.shell: |
+            find /var/lib/snapd/desktop/applications \
+                 /usr/share/applications \
+                 -maxdepth 1 \
+                 -iname '*wps*.desktop' \
+                 -print 2>/dev/null || true
+          register: wps_desktop
+          changed_when: false
+
+        # ------------------------------------------------------
+        # 13. Show installation result
+        # ------------------------------------------------------
+
+        - name: Display WPS result
+          ansible.builtin.debug:
+            msg:
+              - "=========================================="
+              - "SERVER : {{ inventory_hostname }}"
+              - "SNAPD  : {{ 'READY' if snap_version.rc == 0 else 'FAILED' }}"
+              - "WPS    : {{ 'INSTALLED' if wps_verify.rc == 0 else 'NOT INSTALLED' }}"
+              - "DESKTOP: {{ wps_desktop.stdout_lines | join(', ') if wps_desktop.stdout_lines else 'NOT FOUND' }}"
+              - "=========================================="
+
+      # ========================================================
+      # If something fails, show the failure
+      # Puppet will STILL be started in always
+      # ========================================================
+
+      rescue:
+
+        - name: WPS installation failed
+          ansible.builtin.debug:
+            msg:
+              - "WPS installation failed on {{ inventory_hostname }}"
+              - "Puppet will be started again."
+
+      # ========================================================
+      # ALWAYS START PUPPET
+      # ========================================================
+
+      always:
+
+        - name: Start Puppet service
+          ansible.builtin.systemd:
+            name: puppet
+            state: started
+            enabled: true
+
+        - name: Verify Puppet service
+          ansible.builtin.systemd:
+            name: puppet
+          register: puppet_status
+
+        - name: Display Puppet status
+          ansible.builtin.debug:
+            msg:
+              - "=========================================="
+              - "PUPPET: {{ puppet_status.status.ActiveState }}"
+              - "SERVER: {{ inventory_hostname }}"
+              - "=========================================="
