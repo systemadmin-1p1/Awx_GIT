@@ -4,131 +4,196 @@
   become: true
   gather_facts: true
 
+  vars:
+    corporate_proxy: "http://172.24.11.7:8080"
+
   tasks:
 
-    # ---------------------------------------------------------
-    # 1. Check OS
-    # ---------------------------------------------------------
-    - name: Display OS information
+    # ==========================================================
+    # 1. Configure proxy environment
+    # ==========================================================
+
+    - name: Configure proxy in /etc/environment
+      ansible.builtin.blockinfile:
+        path: /etc/environment
+        marker: "# {mark} ANSIBLE CORPORATE PROXY"
+        block: |
+          http_proxy={{ corporate_proxy }}
+          https_proxy={{ corporate_proxy }}
+          ftp_proxy={{ corporate_proxy }}
+          HTTP_PROXY={{ corporate_proxy }}
+          HTTPS_PROXY={{ corporate_proxy }}
+          FTP_PROXY={{ corporate_proxy }}
+          no_proxy=localhost,127.0.0.1,.1p1.local,.1point1.com,.1point1.in,.1p1.in,172.18.0.0/16,192.168.0.0/16,172.21.11.0/24,172.24.11.0/24
+
+    # ==========================================================
+    # 2. Configure APT proxy
+    # ==========================================================
+
+    - name: Configure APT HTTP proxy
+      ansible.builtin.copy:
+        dest: /etc/apt/apt.conf.d/80proxy
+        owner: root
+        group: root
+        mode: "0644"
+        content: |
+          Acquire::http::Proxy "http://172.24.11.7:8080";
+          Acquire::https::Proxy "http://172.24.11.7:8080";
+
+    # ==========================================================
+    # 3. Test proxy
+    # ==========================================================
+
+    - name: Test HTTPS through corporate proxy
+      ansible.builtin.command:
+        cmd: curl -I -L --connect-timeout 15 https://dl.google.com
+      environment:
+        http_proxy: "{{ corporate_proxy }}"
+        https_proxy: "{{ corporate_proxy }}"
+        HTTP_PROXY: "{{ corporate_proxy }}"
+        HTTPS_PROXY: "{{ corporate_proxy }}"
+      register: proxy_test
+      changed_when: false
+      failed_when: false
+
+    - name: Display proxy test
       ansible.builtin.debug:
         msg:
-          - "Host: {{ inventory_hostname }}"
-          - "OS: {{ ansible_distribution }} {{ ansible_distribution_version }}"
-          - "Architecture: {{ ansible_architecture }}"
+          - "Proxy return code: {{ proxy_test.rc }}"
+          - "{{ proxy_test.stdout_lines }}"
 
-    # ---------------------------------------------------------
-    # 2. Update APT cache
-    # ---------------------------------------------------------
-    - name: Update apt cache
+    # ==========================================================
+    # 4. Update APT
+    # ==========================================================
+
+    - name: Update APT cache
       ansible.builtin.apt:
         update_cache: true
         cache_valid_time: 3600
-      when:
-        - ansible_os_family == "Debian"
+      register: apt_update
+      retries: 3
+      delay: 5
+      until: apt_update is succeeded
 
-    # ---------------------------------------------------------
-    # 3. Install snapd
-    # ---------------------------------------------------------
+    # ==========================================================
+    # 5. Install snapd
+    # ==========================================================
+
     - name: Install snapd
       ansible.builtin.apt:
         name: snapd
         state: present
-        update_cache: true
-      when:
-        - ansible_os_family == "Debian"
 
-    # ---------------------------------------------------------
-    # 4. Enable snapd service
-    # ---------------------------------------------------------
+    # ==========================================================
+    # 6. Start snapd
+    # ==========================================================
+
     - name: Enable snapd service
       ansible.builtin.systemd:
         name: snapd.service
         enabled: true
         state: started
-      when:
-        - ansible_os_family == "Debian"
-      failed_when: false
 
-    # ---------------------------------------------------------
-    # 5. Enable snapd socket
-    # ---------------------------------------------------------
     - name: Enable snapd socket
       ansible.builtin.systemd:
         name: snapd.socket
         enabled: true
         state: started
-      when:
-        - ansible_os_family == "Debian"
-      failed_when: false
 
-    # ---------------------------------------------------------
-    # 6. Check snap command
-    # ---------------------------------------------------------
-    - name: Check snap command
-      ansible.builtin.command:
-        cmd: snap --version
-      register: snap_version
-      changed_when: false
-      failed_when: false
+    # ==========================================================
+    # 7. Configure proxy for snapd
+    # ==========================================================
 
-    - name: Display snap version
-      ansible.builtin.debug:
-        msg: "{{ snap_version.stdout }}"
+    - name: Create snapd systemd override directory
+      ansible.builtin.file:
+        path: /etc/systemd/system/snapd.service.d
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
 
-    # ---------------------------------------------------------
-    # 7. Wait for snapd to become ready
-    # ---------------------------------------------------------
-    - name: Wait for snapd to become ready
+    - name: Configure proxy for snapd
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/snapd.service.d/proxy.conf
+        owner: root
+        group: root
+        mode: "0644"
+        content: |
+          [Service]
+          Environment="http_proxy=http://172.24.11.7:8080"
+          Environment="https_proxy=http://172.24.11.7:8080"
+          Environment="HTTP_PROXY=http://172.24.11.7:8080"
+          Environment="HTTPS_PROXY=http://172.24.11.7:8080"
+          Environment="no_proxy=localhost,127.0.0.1,172.24.11.0/24"
+
+    - name: Reload systemd
+      ansible.builtin.systemd:
+        daemon_reload: true
+
+    - name: Restart snapd
+      ansible.builtin.systemd:
+        name: snapd
+        state: restarted
+
+    # ==========================================================
+    # 8. Wait for snapd
+    # ==========================================================
+
+    - name: Wait for snapd
       ansible.builtin.command:
         cmd: snap version
       register: snap_ready
-      retries: 10
+      retries: 12
       delay: 5
       until: snap_ready.rc == 0
       changed_when: false
-      failed_when: false
 
-    # ---------------------------------------------------------
-    # 8. Check whether WPS is already installed
-    # ---------------------------------------------------------
-    - name: Check whether WPS Office is installed
+    - name: Display snap version
+      ansible.builtin.debug:
+        var: snap_ready.stdout_lines
+
+    # ==========================================================
+    # 9. Check WPS
+    # ==========================================================
+
+    - name: Check WPS installation
       ansible.builtin.command:
         cmd: snap list wps-2019-snap
       register: wps_check
       changed_when: false
       failed_when: false
 
-    # ---------------------------------------------------------
-    # 9. Install WPS Office
-    # ---------------------------------------------------------
+    # ==========================================================
+    # 10. Install WPS
+    # ==========================================================
+
     - name: Install WPS Office
       ansible.builtin.command:
         cmd: snap install wps-2019-snap
       register: wps_install
       when:
-        - snap_ready.rc == 0
         - wps_check.rc != 0
 
-    # ---------------------------------------------------------
-    # 10. Verify WPS installation
-    # ---------------------------------------------------------
-    - name: Verify WPS Office installation
+    # ==========================================================
+    # 11. Verify WPS
+    # ==========================================================
+
+    - name: Verify WPS Office
       ansible.builtin.command:
         cmd: snap list wps-2019-snap
       register: wps_verify
       changed_when: false
       failed_when: false
 
-    # ---------------------------------------------------------
-    # 11. Installation result
-    # ---------------------------------------------------------
-    - name: Display WPS installation result
+    # ==========================================================
+    # 12. Final result
+    # ==========================================================
+
+    - name: Installation result
       ansible.builtin.debug:
-        msg: >-
-          {% if wps_verify.rc == 0 %}
-          WPS Office is installed successfully on {{ inventory_hostname }}.
-          {% elif snap_ready.rc != 0 %}
-          WPS Office installation failed because snapd is not ready on {{ inventory_hostname }}.
-          {% else %}
-          WPS Office installation could not be completed on {{ inventory_hostname }}.
-          {% endif %}
+        msg:
+          - "=========================================="
+          - "SERVER : {{ inventory_hostname }}"
+          - "SNAPD  : {{ 'READY' if snap_ready.rc == 0 else 'FAILED' }}"
+          - "WPS    : {{ 'INSTALLED' if wps_verify.rc == 0 else 'NOT INSTALLED' }}"
+          - "=========================================="
