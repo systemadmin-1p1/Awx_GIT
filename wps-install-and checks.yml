@@ -33,19 +33,6 @@
 
     - block:
 
-        - name: APT Update
-          ansible.builtin.apt:
-            update_cache: true
-          environment:
-            http_proxy: ""
-            https_proxy: ""
-            ftp_proxy: ""
-            HTTP_PROXY: ""
-            HTTPS_PROXY: ""
-            FTP_PROXY: ""
-            ALL_PROXY: ""
-            all_proxy: ""
-
         - name: Check snapd installation
           ansible.builtin.command:
             cmd: dpkg-query -W -f='${Status}' snapd
