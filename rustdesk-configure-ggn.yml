@@ -1,0 +1,67 @@
+---
+- name: Configure RustDesk on desktops
+  hosts: all
+  become: false
+  gather_facts: false
+
+  vars:
+    rustdesk_config: "/home/opoadmin/.config/rustdesk/RustDesk2.toml"
+
+  tasks:
+
+    - name: Check RustDesk installation
+      ansible.builtin.command:
+        cmd: rustdesk --version
+      register: rustdesk_version
+      changed_when: false
+
+    - name: Show RustDesk version
+      ansible.builtin.debug:
+        msg: "RustDesk version: {{ rustdesk_version.stdout }}"
+
+    - name: Check RustDesk configuration file
+      ansible.builtin.stat:
+        path: "{{ rustdesk_config }}"
+      register: rustdesk_config_file
+
+    - name: Stop if RustDesk configuration does not exist
+      ansible.builtin.fail:
+        msg: "RustDesk configuration file not found: {{ rustdesk_config }}"
+      when: not rustdesk_config_file.stat.exists
+
+    - name: Enable Direct IP Access
+      ansible.builtin.lineinfile:
+        path: "{{ rustdesk_config }}"
+        regexp: "^direct-server\s*="
+        line: "direct-server = 'Y'"
+        insertafter: '^\[options\]'
+        backup: true
+
+    - name: Configure Direct IP Access Port
+      ansible.builtin.lineinfile:
+        path: "{{ rustdesk_config }}"
+        regexp: "^direct-access-port\s*="
+        line: "direct-access-port = '21118'"
+        insertafter: '^\[options\]'
+
+    - name: Configure Permanent Password authentication
+      ansible.builtin.lineinfile:
+        path: "{{ rustdesk_config }}"
+        regexp: "^verification-method\s*="
+        line: "verification-method = Alb3rtp!nt0"
+        insertafter: '^\[options\]'
+
+    - name: Set RustDesk permanent password
+      ansible.builtin.command:
+        cmd: rustdesk --password "Alb3rtp!nt0"
+      no_log: true
+
+    - name: Show RustDesk configuration
+      ansible.builtin.shell: |
+        grep -E "^(direct-server|direct-access-port|verification-method)" "{{ rustdesk_config }}"
+      register: rustdesk_settings
+      changed_when: false
+
+    - name: Display configured RustDesk settings
+      ansible.builtin.debug:
+        var: rustdesk_settings.stdout_lines
