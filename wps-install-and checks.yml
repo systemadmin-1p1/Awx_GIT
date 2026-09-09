@@ -2,9 +2,11 @@
 - name: Install WPS Office
   hosts: all
   become: true
+  become_method: sudo
   gather_facts: false
 
   tasks:
+
     - name: Stop Puppet
       ansible.builtin.systemd:
         name: puppet
@@ -30,6 +32,20 @@
         daemon_reload: true
 
     - block:
+
+        - name: APT Update
+          ansible.builtin.apt:
+            update_cache: true
+          environment:
+            http_proxy: ""
+            https_proxy: ""
+            ftp_proxy: ""
+            HTTP_PROXY: ""
+            HTTPS_PROXY: ""
+            FTP_PROXY: ""
+            ALL_PROXY: ""
+            all_proxy: ""
+
         - name: Check snapd installation
           ansible.builtin.command:
             cmd: dpkg-query -W -f='${Status}' snapd
@@ -41,7 +57,6 @@
           ansible.builtin.apt:
             name: snapd
             state: present
-            update_cache: true
           when: "'install ok installed' not in snapd_check.stdout"
           environment:
             http_proxy: ""
@@ -95,8 +110,7 @@
             ALL_PROXY: ""
             all_proxy: ""
 
-        # --- CLI Fix: Expose direct commands (wps, et, wpp) into standard PATH ---
-        - name: Symlink WPS CLI executables to /usr/local/bin
+        - name: Create WPS CLI symlinks
           ansible.builtin.file:
             src: "/snap/bin/wps-office-multilang.{{ item.src }}"
             dest: "/usr/local/bin/{{ item.dest }}"
@@ -107,14 +121,13 @@
             - { src: "et", dest: "et" }
             - { src: "wpp", dest: "wpp" }
 
-        # --- GUI Fix: Force desktop menu integration ---
-        - name: Find WPS snap desktop files
+        - name: Find WPS desktop files
           ansible.builtin.find:
             paths: /var/lib/snapd/desktop/applications
             patterns: "*wps*.desktop"
           register: wps_desktop_files
 
-        - name: Symlink desktop entries to /usr/share/applications
+        - name: Create WPS desktop application links
           ansible.builtin.file:
             src: "{{ item.path }}"
             dest: "/usr/share/applications/{{ item.path | basename }}"
@@ -129,6 +142,7 @@
           failed_when: false
 
       always:
+
         - name: Start Puppet
           ansible.builtin.systemd:
             name: puppet
