@@ -1,0 +1,28 @@
+---
+- name: Test sudo from AWX
+  hosts: all
+  become: true
+  become_method: sudo
+  gather_facts: false
+
+  tasks:
+
+    - name: Check current user
+      ansible.builtin.command:
+        cmd: whoami
+      register: user_check
+      changed_when: false
+
+    - name: Show current user
+      ansible.builtin.debug:
+        var: user_check.stdout
+
+    - name: Test apt update
+      ansible.builtin.command:
+        cmd: apt-get update
+      register: apt_update
+      changed_when: false
+
+    - name: Show apt result
+      ansible.builtin.debug:
+        var: apt_update.stdout_lines
