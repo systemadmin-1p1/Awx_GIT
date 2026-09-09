@@ -5,7 +5,6 @@
   gather_facts: false
 
   tasks:
-
     - name: Stop Puppet
       ansible.builtin.systemd:
         name: puppet
@@ -31,8 +30,6 @@
         daemon_reload: true
 
     - block:
-
-        # Check whether snapd is already installed
         - name: Check snapd installation
           ansible.builtin.command:
             cmd: dpkg-query -W -f='${Status}' snapd
@@ -40,7 +37,6 @@
           changed_when: false
           failed_when: false
 
-        # Install only if snapd is NOT installed
         - name: Install snapd
           ansible.builtin.apt:
             name: snapd
@@ -78,7 +74,6 @@
           until: snap_version.rc == 0
           changed_when: false
 
-        # Install WPS only if not already installed
         - name: Check WPS installation
           ansible.builtin.command:
             cmd: snap list wps-office-multilang
@@ -100,8 +95,40 @@
             ALL_PROXY: ""
             all_proxy: ""
 
-      always:
+        # --- CLI Fix: Expose direct commands (wps, et, wpp) into standard PATH ---
+        - name: Symlink WPS CLI executables to /usr/local/bin
+          ansible.builtin.file:
+            src: "/snap/bin/wps-office-multilang.{{ item.src }}"
+            dest: "/usr/local/bin/{{ item.dest }}"
+            state: link
+            force: true
+          loop:
+            - { src: "wps", dest: "wps" }
+            - { src: "et", dest: "et" }
+            - { src: "wpp", dest: "wpp" }
 
+        # --- GUI Fix: Force desktop menu integration ---
+        - name: Find WPS snap desktop files
+          ansible.builtin.find:
+            paths: /var/lib/snapd/desktop/applications
+            patterns: "*wps*.desktop"
+          register: wps_desktop_files
+
+        - name: Symlink desktop entries to /usr/share/applications
+          ansible.builtin.file:
+            src: "{{ item.path }}"
+            dest: "/usr/share/applications/{{ item.path | basename }}"
+            state: link
+            force: true
+          loop: "{{ wps_desktop_files.files }}"
+
+        - name: Update desktop database
+          ansible.builtin.command:
+            cmd: update-desktop-database /usr/share/applications
+          changed_when: false
+          failed_when: false
+
+      always:
         - name: Start Puppet
           ansible.builtin.systemd:
             name: puppet
