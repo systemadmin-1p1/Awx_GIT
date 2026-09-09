@@ -6,92 +6,104 @@
 
   tasks:
 
-    # 1. Stop Puppet so it does not restore the proxy
     - name: Stop Puppet
       ansible.builtin.systemd:
         name: puppet
         state: stopped
 
-    # 2. Remove proxy from /etc/environment
     - name: Remove proxy from environment
       ansible.builtin.shell: |
         sed -i -E '/^[[:space:]]*(http_proxy|https_proxy|ftp_proxy|HTTP_PROXY|HTTPS_PROXY|FTP_PROXY|ALL_PROXY|all_proxy)=/d' /etc/environment
       changed_when: true
 
-    # 3. Remove APT proxy configuration
     - name: Remove APT proxy configuration
       ansible.builtin.file:
         path: /etc/apt/apt.conf.d/80proxy
         state: absent
 
-    # 4. Remove old snapd proxy configuration
-    - name: Remove snapd proxy configuration
+    - name: Remove old snapd proxy configuration
       ansible.builtin.file:
         path: /etc/systemd/system/snapd.service.d/proxy.conf
         state: absent
 
-    # 5. Reload systemd after removing snapd proxy
     - name: Reload systemd
       ansible.builtin.systemd:
         daemon_reload: true
 
-    # 6. Install snapd
-    - name: Install snapd
-      ansible.builtin.apt:
-        name: snapd
-        state: present
-        update_cache: true
-      environment:
-        http_proxy: ""
-        https_proxy: ""
-        ftp_proxy: ""
-        HTTP_PROXY: ""
-        HTTPS_PROXY: ""
-        FTP_PROXY: ""
-        ALL_PROXY: ""
-        all_proxy: ""
+    - block:
 
-    # 7. Start snapd
-    - name: Start snapd
-      ansible.builtin.systemd:
-        name: snapd
-        state: started
-        enabled: true
+        # Check whether snapd is already installed
+        - name: Check snapd installation
+          ansible.builtin.command:
+            cmd: dpkg-query -W -f='${Status}' snapd
+          register: snapd_check
+          changed_when: false
+          failed_when: false
 
-    # 8. Start snapd socket
-    - name: Start snapd socket
-      ansible.builtin.systemd:
-        name: snapd.socket
-        state: started
-        enabled: true
+        # Install only if snapd is NOT installed
+        - name: Install snapd
+          ansible.builtin.apt:
+            name: snapd
+            state: present
+            update_cache: true
+          when: "'install ok installed' not in snapd_check.stdout"
+          environment:
+            http_proxy: ""
+            https_proxy: ""
+            ftp_proxy: ""
+            HTTP_PROXY: ""
+            HTTPS_PROXY: ""
+            FTP_PROXY: ""
+            ALL_PROXY: ""
+            all_proxy: ""
 
-    # 9. Wait until snapd is ready
-    - name: Wait for snapd
-      ansible.builtin.command:
-        cmd: snap version
-      register: snap_version
-      retries: 12
-      delay: 5
-      until: snap_version.rc == 0
-      changed_when: false
+        - name: Start snapd
+          ansible.builtin.systemd:
+            name: snapd
+            state: started
+            enabled: true
 
-    # 10. Install WPS Office
-    - name: Install WPS Office
-      ansible.builtin.command:
-        cmd: snap install wps-office-multilang
-      environment:
-        http_proxy: ""
-        https_proxy: ""
-        ftp_proxy: ""
-        HTTP_PROXY: ""
-        HTTPS_PROXY: ""
-        FTP_PROXY: ""
-        ALL_PROXY: ""
-        all_proxy: ""
+        - name: Start snapd socket
+          ansible.builtin.systemd:
+            name: snapd.socket
+            state: started
+            enabled: true
 
-    # 11. Start Puppet again
-    - name: Start Puppet
-      ansible.builtin.systemd:
-        name: puppet
-        state: started
-        enabled: true
+        - name: Wait for snapd
+          ansible.builtin.command:
+            cmd: snap version
+          register: snap_version
+          retries: 12
+          delay: 5
+          until: snap_version.rc == 0
+          changed_when: false
+
+        # Install WPS only if not already installed
+        - name: Check WPS installation
+          ansible.builtin.command:
+            cmd: snap list wps-office-multilang
+          register: wps_check
+          changed_when: false
+          failed_when: false
+
+        - name: Install WPS Office
+          ansible.builtin.command:
+            cmd: snap install wps-office-multilang
+          when: wps_check.rc != 0
+          environment:
+            http_proxy: ""
+            https_proxy: ""
+            ftp_proxy: ""
+            HTTP_PROXY: ""
+            HTTPS_PROXY: ""
+            FTP_PROXY: ""
+            ALL_PROXY: ""
+            all_proxy: ""
+
+      always:
+
+        - name: Start Puppet
+          ansible.builtin.systemd:
+            name: puppet
+            state: started
+            enabled: true
