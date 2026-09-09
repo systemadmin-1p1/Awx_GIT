@@ -40,6 +40,32 @@
           changed_when: false
           failed_when: false
 
+        - name: Wait for APT processes to finish
+          ansible.builtin.shell: |
+            while pgrep -x apt-get >/dev/null 2>&1 ||
+                  pgrep -x apt >/dev/null 2>&1 ||
+                  pgrep -x unattended-upgrade >/dev/null 2>&1 ||
+                  fuser /var/lib/apt/lists/lock >/dev/null 2>&1
+            do
+                sleep 5
+            done
+          changed_when: false
+          when: "'install ok installed' not in snapd_check.stdout"
+
+        - name: APT Update
+          ansible.builtin.apt:
+            update_cache: true
+          when: "'install ok installed' not in snapd_check.stdout"
+          environment:
+            http_proxy: ""
+            https_proxy: ""
+            ftp_proxy: ""
+            HTTP_PROXY: ""
+            HTTPS_PROXY: ""
+            FTP_PROXY: ""
+            ALL_PROXY: ""
+            all_proxy: ""
+
         - name: Install snapd
           ansible.builtin.apt:
             name: snapd
