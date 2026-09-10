@@ -1,34 +1,46 @@
 ---
-- name: Inspect AWX job storage
-  hosts: localhost
-  connection: local
+- name: Install WPS
+  hosts: all
+  become: true
   gather_facts: false
 
   tasks:
 
-    - name: Inspect runner and project
-      ansible.builtin.shell: |
-        echo "=== RUNNER ==="
-        ls -lah /runner
-
-        echo
-        echo "=== PROJECT ==="
-        ls -lah /runner/project
-
-        echo
-        echo "=== PROJECT FILES ==="
-        find /runner/project -maxdepth 2 -type f -printf '%p %s bytes\n' | sort
-
-        echo
-        echo "=== MOUNTS ==="
-        cat /proc/mounts | grep -E '/runner|project|awx' || true
-
-        echo
-        echo "=== FILESYSTEM ==="
-        df -h /runner /runner/project
-      register: result
+    - name: Check if WPS is already installed
+      ansible.builtin.shell:
+        cmd: dpkg -l | grep -i wps
+      register: wps_check
       changed_when: false
+      failed_when: false
 
-    - name: Display storage information
+    - name: Show WPS installation status
       ansible.builtin.debug:
-        var: result.stdout_lines
+        msg: >-
+          {% if wps_check.rc == 0 %}
+          WPS is already installed.
+          {% else %}
+          WPS is not installed. Proceeding with installation.
+          {% endif %}
+
+    - name: Update APT package index
+      ansible.builtin.command:
+        cmd: apt update
+      when: wps_check.rc != 0
+
+    - name: Install WPS package
+      ansible.builtin.shell:
+        cmd: apt install -y ./wps-office*.deb
+      args:
+        chdir: /tmp
+      when: wps_check.rc != 0
+
+    - name: Verify WPS installation
+      ansible.builtin.shell:
+        cmd: dpkg -l | grep -i wps
+      register: wps_verify
+      changed_when: false
+      failed_when: wps_verify.rc != 0
+
+    - name: Display installed WPS
+      ansible.builtin.debug:
+        var: wps_verify.stdout_lines
