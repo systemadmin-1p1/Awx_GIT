@@ -1,61 +1,14 @@
+---
 - name: Update apt cache and upgrade packages
-  ansible.builtin.apt:
-    update_cache: yes
-    upgrade: dist
-    cache_valid_time: 0
-  register: apt_output
-  until: apt_output is success
-  retries: 5
-  delay: 10
-
-
-
-
-
-
-# ---
-# - name: Disable all automatic background APT updates and timers
-#   hosts: all
-#   become: yes
-#   tasks:
-#     - name: Stop and mask systemd apt timers and services
-#       ansible.builtin.systemd:
-#         name: "{{ item }}"
-#         state: stopped
-#         enabled: no
-#         masked: yes
-#       loop:
-#         - apt-daily.timer
-#         - apt-daily-upgrade.timer
-#         - apt-daily.service
-#         - apt-daily-upgrade.service
-#         - unattended-upgrades.service
-
-#     - name: Disable PackageKit service and timer (desktop auto-updater)
-#       ansible.builtin.systemd:
-#         name: "{{ item }}"
-#         state: stopped
-#         enabled: no
-#         masked: yes
-#       loop:
-#         - packagekit.service
-#       failed_when: false
-
-#     - name: Disable APT periodic update configurations
-#       ansible.builtin.copy:
-#         dest: /etc/apt/apt.conf.d/20auto-upgrades
-#         owner: root
-#         group: root
-#         mode: '0644'
-#         content: |
-#           APT::Periodic::Update-Package-Lists "0";
-#           APT::Periodic::Download-Upgradeable-Packages "0";
-#           APT::Periodic::AutocleanInterval "0";
-#           APT::Periodic::Unattended-Upgrade "0";
-
-#     - name: Ensure unattended-upgrades package is purged or disabled
-#       ansible.builtin.apt:
-#         name: unattended-upgrades
-#         state: absent
-#         purge: yes
-#       failed_when: false
+  hosts: all
+  become: yes
+  tasks:
+    - name: Update apt cache and upgrade packages
+      ansible.builtin.apt:
+        update_cache: yes
+        upgrade: dist
+        cache_valid_time: 0
+      register: apt_output
+      until: apt_output is success
+      retries: 5
+      delay: 10
