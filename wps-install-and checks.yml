@@ -1,22 +1,33 @@
 ---
-- name: Test AWX job container
+- name: Identify AWX job container
   hosts: localhost
   connection: local
   gather_facts: false
 
   tasks:
 
-    - name: Show hostname
-      ansible.builtin.command:
-        cmd: hostname
-      register: hostname_result
+    - name: Show execution environment
+      ansible.builtin.shell: |
+        echo "HOSTNAME=$HOSTNAME"
+        echo "USER=$(id -un 2>/dev/null || true)"
+        echo "UID=$(id -u 2>/dev/null || true)"
+        echo "PWD=$PWD"
+        echo "HOME=$HOME"
+        echo
+        echo "=== /opt ==="
+        ls -lah /opt 2>&1 || true
+        echo
+        echo "=== AWX STORAGE ==="
+        ls -lah /opt/awx-storage 2>&1 || true
+        echo
+        echo "=== WPS ==="
+        ls -lah /opt/awx-storage/wps 2>&1 || true
+        echo
+        echo "=== MOUNTS ==="
+        mount 2>/dev/null | grep -E 'awx-storage|/runner|projects' || true
+      register: result
       changed_when: false
 
-    - name: Keep job alive
-      ansible.builtin.command:
-        cmd: sleep 15
-      changed_when: false
-
-    - name: Show hostname
+    - name: Show execution environment
       ansible.builtin.debug:
-        var: hostname_result.stdout
+        var: result.stdout_lines
