@@ -1,5 +1,5 @@
 ---
-- name: Install WPS Office and Set as Default
+- name: Install WPS Office
   hosts: all
   become: yes
   tasks:
@@ -28,22 +28,6 @@
 
     - name: Complete package configuration
       ansible.builtin.command: dpkg --configure wps-office
-
-    - name: Set WPS Office as default office suite system-wide
-      ansible.builtin.copy:
-        dest: /etc/xdg/mimeapps.list
-        owner: root
-        group: root
-        mode: '0644'
-        content: |
-          [Default Applications]
-          application/msword=wps-office-wps.desktop
-          application/vnd.openxmlformats-officedocument.wordprocessingml.document=wps-office-wps.desktop
-          application/vnd.ms-excel=wps-office-et.desktop
-          application/vnd.openxmlformats-officedocument.spreadsheetml.sheet=wps-office-et.desktop
-          application/vnd.ms-powerpoint=wps-office-wpp.desktop
-          application/vnd.openxmlformats-officedocument.presentationml.presentation=wps-office-wpp.desktop
-          application/pdf=wps-office-pdf.desktop
 
     - name: Clean up installer deb
       ansible.builtin.file:
