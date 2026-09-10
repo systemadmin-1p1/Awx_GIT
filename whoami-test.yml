@@ -1,48 +1,14 @@
 ---
-- name: Test APT lock handling
+- name: APT Update and Upgrade
   hosts: all
   become: true
-  become_method: sudo
   gather_facts: false
 
   tasks:
-
-    - name: Show current APT processes
-      ansible.builtin.shell: |
-        ps -ef | grep -E '[a]pt|[d]pkg|[u]nattended-upgrade' || true
-      register: apt_before
-      changed_when: false
-
-    - name: Display APT processes before cleanup
-      ansible.builtin.debug:
-        var: apt_before.stdout_lines
-
-    - name: Stop running APT processes
-      ansible.builtin.shell: |
-        pkill -TERM -x apt-get || true
-        pkill -TERM -x apt || true
-        pkill -TERM -x unattended-upgrade || true
-        sleep 2
-        pkill -KILL -x apt-get || true
-        pkill -KILL -x apt || true
-        pkill -KILL -x unattended-upgrade || true
-      changed_when: false
-
-    - name: Check remaining APT processes
-      ansible.builtin.shell: |
-        ps -ef | grep -E '[a]pt|[d]pkg|[u]nattended-upgrade' || true
-      register: apt_after
-      changed_when: false
-
-    - name: Display APT processes after cleanup
-      ansible.builtin.debug:
-        var: apt_after.stdout_lines
-
-    - name: APT Update
+    - name: Update APT cache
       ansible.builtin.apt:
         update_cache: true
-        lock_timeout: 15
 
-    - name: Test result
-      ansible.builtin.debug:
-        msg: "APT update completed successfully on {{ inventory_hostname }}"
+    - name: Upgrade all packages
+      ansible.builtin.apt:
+        upgrade: dist
