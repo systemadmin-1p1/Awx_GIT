@@ -1,14 +1,10 @@
 ---
-- name: Update apt cache and upgrade packages
+- name: Test APT Update
   hosts: all
-  become: yes
+  become: true
+  gather_facts: false
+
   tasks:
-    - name: Update apt cache and upgrade packages
-      ansible.builtin.apt:
-        update_cache: yes
-        upgrade: dist
-        cache_valid_time: 0
-      register: apt_output
-      until: apt_output is success
-      retries: 5
-      delay: 10
+    - name: Run apt update
+      ansible.builtin.command:
+        cmd: apt update
