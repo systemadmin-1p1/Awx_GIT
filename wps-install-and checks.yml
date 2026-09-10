@@ -1,33 +1,30 @@
 ---
-- name: Identify AWX job container
+- name: Inspect AWX job project storage
   hosts: localhost
   connection: local
   gather_facts: false
 
   tasks:
 
-    - name: Show execution environment
+    - name: Inspect project paths
       ansible.builtin.shell: |
-        echo "HOSTNAME=$HOSTNAME"
-        echo "USER=$(id -un 2>/dev/null || true)"
-        echo "UID=$(id -u 2>/dev/null || true)"
         echo "PWD=$PWD"
         echo "HOME=$HOME"
         echo
-        echo "=== /opt ==="
-        ls -lah /opt 2>&1 || true
+        echo "=== /runner ==="
+        ls -lah /runner
         echo
-        echo "=== AWX STORAGE ==="
-        ls -lah /opt/awx-storage 2>&1 || true
+        echo "=== /runner/project ==="
+        ls -lah /runner/project
         echo
-        echo "=== WPS ==="
-        ls -lah /opt/awx-storage/wps 2>&1 || true
+        echo "=== mounts ==="
+        mount 2>/dev/null | grep -E 'runner|project|awx' || true
         echo
-        echo "=== MOUNTS ==="
-        mount 2>/dev/null | grep -E 'awx-storage|/runner|projects' || true
+        echo "=== disk ==="
+        df -h
       register: result
       changed_when: false
 
-    - name: Show execution environment
+    - name: Display
       ansible.builtin.debug:
         var: result.stdout_lines
