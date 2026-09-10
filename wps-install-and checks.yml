@@ -13,34 +13,13 @@
       changed_when: false
       failed_when: false
 
-    - name: Show WPS installation status
-      ansible.builtin.debug:
-        msg: >-
-          {% if wps_check.rc == 0 %}
-          WPS is already installed.
-          {% else %}
-          WPS is not installed. Proceeding with installation.
-          {% endif %}
-
-    - name: Update APT package index
+    - name: Run apt update
       ansible.builtin.command:
         cmd: apt update
       when: wps_check.rc != 0
 
-    - name: Install WPS package
-      ansible.builtin.shell:
-        cmd: apt install -y ./wps-office*.deb
-      args:
-        chdir: /tmp
+    - name: Install WPS
+      ansible.builtin.apt:
+        name: wps-office
+        state: present
       when: wps_check.rc != 0
-
-    - name: Verify WPS installation
-      ansible.builtin.shell:
-        cmd: dpkg -l | grep -i wps
-      register: wps_verify
-      changed_when: false
-      failed_when: wps_verify.rc != 0
-
-    - name: Display installed WPS
-      ansible.builtin.debug:
-        var: wps_verify.stdout_lines
