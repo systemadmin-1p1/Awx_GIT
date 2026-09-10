@@ -1,52 +1,17 @@
 ---
-- name: Install WPS Office
-  hosts: all
-  become: true
-  become_method: sudo
+- name: Test WPS storage
+  hosts: localhost
+  connection: local
   gather_facts: false
-
-  vars:
-    wps_source: "/opt/awx-storage/wps/wps-office_11.1.0.11733.XA_amd64.deb"
-    wps_dest: "/tmp/wps-office_11.1.0.11733.XA_amd64.deb"
 
   tasks:
 
-    - name: Stop Puppet
-      ansible.builtin.systemd:
-        name: puppet
-        state: stopped
-      failed_when: false
+    - name: List WPS storage
+      ansible.builtin.command:
+        cmd: ls -lh /opt/awx-storage/wps/
+      register: wps_files
+      changed_when: false
 
-    - block:
-
-        - name: Check WPS installation
-          ansible.builtin.shell:
-            cmd: dpkg -l | grep -q '^ii  wps'
-          register: wps_check
-          changed_when: false
-          failed_when: false
-
-        - name: Copy WPS package to desktop
-          ansible.builtin.copy:
-            src: "{{ wps_source }}"
-            dest: "{{ wps_dest }}"
-            mode: "0644"
-          when: wps_check.rc != 0
-
-        - name: Install WPS Office
-          ansible.builtin.apt:
-            deb: "{{ wps_dest }}"
-          when: wps_check.rc != 0
-
-        - name: Remove WPS package from desktop
-          ansible.builtin.file:
-            path: "{{ wps_dest }}"
-            state: absent
-
-      always:
-
-        - name: Start Puppet
-          ansible.builtin.systemd:
-            name: puppet
-            state: started
-            enabled: true
+    - name: Show WPS storage
+      ansible.builtin.debug:
+        var: wps_files.stdout_lines
