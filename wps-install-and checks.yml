@@ -1,172 +1,52 @@
 ---
-- name: Install WPS Office from GitHub Release
+- name: Install WPS Office
   hosts: all
   become: true
   become_method: sudo
   gather_facts: false
-  # Prevents unreachable machines (like .97) from blocking or failing the rest of the batch
-  ignore_unreachable: true
 
   vars:
-    # Your exact GitHub Release download URL
-    github_deb_url: "https://github.com/systemadmin-1p1/Awx_GIT/releases/download/wps-deb-11/wps-office_11.1.0.11733.XA_amd64.deb"
-    github_token: "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"
-    temp_deb_path: "/tmp/wps-office.deb"
+    wps_source: "/opt/awx-storage/wps/wps-office_11.1.0.11733.XA_amd64.deb"
+    wps_dest: "/tmp/wps-office_11.1.0.11733.XA_amd64.deb"
 
   tasks:
 
-    # --- 1. Clean Locks & Stop Background Updaters ---
-    - name: Stop Puppet and APT background services
+    - name: Stop Puppet
       ansible.builtin.systemd:
-        name: "{{ item }}"
+        name: puppet
         state: stopped
-      loop:
-        - puppet
-        - apt-daily.service
-        - apt-daily-upgrade.service
-        - apt-daily.timer
-        - apt-daily-upgrade.timer
       failed_when: false
 
-    - name: Wait for any active dpkg/apt locks to release
-      ansible.builtin.shell: |
-        while fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || \
-              fuser /var/lib/apt/lists/lock >/dev/null 2>&1; do
-          sleep 2
-        done
-      changed_when: false
-      timeout: 45
-      failed_when: false
-
-    # --- 2. Check, Fetch & Install WPS ---
     - block:
 
-        - name: Check if WPS Office is already installed
-          ansible.builtin.command:
-            cmd: dpkg-query -W -f='${Status}' wps-office
-          register: wps_installed
+        - name: Check WPS installation
+          ansible.builtin.shell:
+            cmd: dpkg -l | grep -q '^ii  wps'
+          register: wps_check
           changed_when: false
           failed_when: false
 
-        - name: Download and install WPS Office
-          when: "'install ok installed' not in wps_installed.stdout"
-          block:
-
-            - name: Download DEB from GitHub Release
-              ansible.builtin.get_url:
-                url: "{{ github_deb_url }}"
-                dest: "{{ temp_deb_path }}"
-                headers:
-                  Authorization: "Bearer {{ github_token }}"
-                  Accept: "application/octet-stream"
-                mode: "0644"
-                timeout: 300
-                force: true
-
-            - name: Install WPS Office deb package
-              ansible.builtin.apt:
-                deb: "{{ temp_deb_path }}"
-                state: present
-              ignore_errors: true
-              register: deb_result
-
-            - name: Resolve missing shared libraries/dependencies
-              ansible.builtin.command:
-                cmd: apt-get -f install -y
-              environment:
-                DEBIAN_FRONTEND: noninteractive
-              when: deb_result is failed
-
-          always:
-
-            - name: Clean up temporary installer deb file
-              ansible.builtin.file:
-                path: "{{ temp_deb_path }}"
-                state: absent
-
-        # --- 3. Place Desktop Shortcuts ---
-        - name: Find WPS .desktop launch files
-          ansible.builtin.find:
-            paths: /usr/share/applications
-            patterns: "*wps*.desktop"
-          register: wps_desktop_entries
-
-        - name: Identify active user desktop folders
-          ansible.builtin.find:
-            paths: /home
-            file_type: directory
-            recurse: false
-          register: user_home_dirs
-
-        - name: Copy WPS icons to each user's Desktop
+        - name: Copy WPS package to desktop
           ansible.builtin.copy:
-            src: "{{ item.0.path }}"
-            dest: "{{ item.1.path }}/Desktop/{{ item.0.path | basename }}"
-            remote_src: true
-            mode: "0755"
-          loop: "{{ wps_desktop_entries.files | product(user_home_dirs.files) | list }}"
-          failed_when: false
+            src: "{{ wps_source }}"
+            dest: "{{ wps_dest }}"
+            mode: "0644"
+          when: wps_check.rc != 0
+
+        - name: Install WPS Office
+          ansible.builtin.apt:
+            deb: "{{ wps_dest }}"
+          when: wps_check.rc != 0
+
+        - name: Remove WPS package from desktop
+          ansible.builtin.file:
+            path: "{{ wps_dest }}"
+            state: absent
 
       always:
 
-        - name: Ensure Puppet is restarted
+        - name: Start Puppet
           ansible.builtin.systemd:
             name: puppet
             state: started
             enabled: true
-
-# ---
-# - name: Install WPS Office from GitHub
-#   hosts: all
-#   become: true
-#   become_method: sudo
-#   gather_facts: false
-
-#   vars:
-#     wps_url: "https://github.com/systemadmin-1p1/Awx_GIT/releases/download/wps-deb-11/wps-office_11.1.0.11733.XA_amd64.deb"
-#     wps_deb: "/tmp/wps-office_11.1.0.11733.XA_amd64.deb"
-
-#   tasks:
-
-#     - name: Stop Puppet
-#       ansible.builtin.systemd:
-#         name: puppet
-#         state: stopped
-
-#     - block:
-
-#         - name: Remove proxy from environment
-#           ansible.builtin.shell: |
-#             sed -i -E '/^[[:space:]]*(http_proxy|https_proxy|ftp_proxy|HTTP_PROXY|HTTPS_PROXY|FTP_PROXY|ALL_PROXY|all_proxy)=/d' /etc/environment
-#           changed_when: true
-
-#         - name: Remove APT proxy configuration
-#           ansible.builtin.file:
-#             path: /etc/apt/apt.conf.d/80proxy
-#             state: absent
-
-#         - name: Download WPS Office DEB
-#           ansible.builtin.get_url:
-#             url: "{{ wps_url }}"
-#             dest: "{{ wps_deb }}"
-#             mode: "0644"
-#             headers:
-#               Authorization: "Bearer {{ github_token }}"
-#             force: true
-
-#         - name: Install WPS Office
-#           ansible.builtin.apt:
-#             deb: "{{ wps_deb }}"
-
-#         - name: Remove downloaded WPS package
-#           ansible.builtin.file:
-#             path: "{{ wps_deb }}"
-#             state: absent
-
-#       always:
-
-#         - name: Start Puppet
-#           ansible.builtin.systemd:
-#             name: puppet
-#             state: started
-#             enabled: true
