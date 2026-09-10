@@ -1,17 +1,23 @@
 ---
-- name: Test WPS storage
+- name: Identify actual AWX execution environment
   hosts: localhost
   connection: local
   gather_facts: false
 
   tasks:
-
-    - name: List WPS storage
-      ansible.builtin.command:
-        cmd: ls -lh /opt/awx-storage/wps/
-      register: wps_files
+    - name: Show environment
+      ansible.builtin.shell: |
+        echo "HOSTNAME=$HOSTNAME"
+        echo "HOME=$HOME"
+        echo "PWD=$PWD"
+        echo "USER=$(whoami)"
+        echo "CONTAINER:"
+        cat /etc/hostname
+        echo "FILESYSTEM:"
+        ls -lah /
+      register: result
       changed_when: false
 
-    - name: Show WPS storage
+    - name: Show result
       ansible.builtin.debug:
-        var: wps_files.stdout_lines
+        var: result.stdout_lines
