@@ -1,30 +1,34 @@
 ---
-- name: Inspect AWX job project storage
+- name: Inspect AWX job storage
   hosts: localhost
   connection: local
   gather_facts: false
 
   tasks:
 
-    - name: Inspect project paths
+    - name: Inspect runner and project
       ansible.builtin.shell: |
-        echo "PWD=$PWD"
-        echo "HOME=$HOME"
-        echo
-        echo "=== /runner ==="
+        echo "=== RUNNER ==="
         ls -lah /runner
+
         echo
-        echo "=== /runner/project ==="
+        echo "=== PROJECT ==="
         ls -lah /runner/project
+
         echo
-        echo "=== mounts ==="
-        mount 2>/dev/null | grep -E 'runner|project|awx' || true
+        echo "=== PROJECT FILES ==="
+        find /runner/project -maxdepth 2 -type f -printf '%p %s bytes\n' | sort
+
         echo
-        echo "=== disk ==="
-        df -h
+        echo "=== MOUNTS ==="
+        cat /proc/mounts | grep -E '/runner|project|awx' || true
+
+        echo
+        echo "=== FILESYSTEM ==="
+        df -h /runner /runner/project
       register: result
       changed_when: false
 
-    - name: Display
+    - name: Display storage information
       ansible.builtin.debug:
         var: result.stdout_lines
