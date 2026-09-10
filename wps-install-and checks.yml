@@ -1,9 +1,13 @@
 ---
-- name: Install WPS Office
+- name: Install WPS Office from GitHub
   hosts: all
   become: true
   become_method: sudo
   gather_facts: false
+
+  vars:
+    wps_url: "https://github.com/systemadmin-1p1/Awx_GIT/releases/download/wps-deb-11/wps-office_11.1.0.11733.XA_amd64.deb"
+    wps_deb: "/tmp/wps-office_11.1.0.11733.XA_amd64.deb"
 
   tasks:
 
@@ -12,147 +16,41 @@
         name: puppet
         state: stopped
 
-    - name: Remove proxy from environment
-      ansible.builtin.shell: |
-        sed -i -E '/^[[:space:]]*(http_proxy|https_proxy|ftp_proxy|HTTP_PROXY|HTTPS_PROXY|FTP_PROXY|ALL_PROXY|all_proxy)=/d' /etc/environment
-      changed_when: true
-
-    - name: Remove APT proxy configuration
-      ansible.builtin.file:
-        path: /etc/apt/apt.conf.d/80proxy
-        state: absent
-
-    - name: Remove old snapd proxy configuration
-      ansible.builtin.file:
-        path: /etc/systemd/system/snapd.service.d/proxy.conf
-        state: absent
-
-    - name: Reload systemd
-      ansible.builtin.systemd:
-        daemon_reload: true
-
     - block:
 
-        - name: Check snapd installation
-          ansible.builtin.command:
-            cmd: dpkg-query -W -f='${Status}' snapd
-          register: snapd_check
-          changed_when: false
-          failed_when: false
-
-        - name: Wait for APT processes to finish
+        - name: Remove proxy from environment
           ansible.builtin.shell: |
-            while pgrep -x apt-get >/dev/null 2>&1 ||
-                  pgrep -x apt >/dev/null 2>&1 ||
-                  pgrep -x unattended-upgrade >/dev/null 2>&1 ||
-                  fuser /var/lib/apt/lists/lock >/dev/null 2>&1
-            do
-                sleep 5
-            done
-          changed_when: false
-          when: "'install ok installed' not in snapd_check.stdout"
+            sed -i -E '/^[[:space:]]*(http_proxy|https_proxy|ftp_proxy|HTTP_PROXY|HTTPS_PROXY|FTP_PROXY|ALL_PROXY|all_proxy)=/d' /etc/environment
+          changed_when: true
 
-        - name: APT Update
-          ansible.builtin.apt:
-            update_cache: true
-          when: "'install ok installed' not in snapd_check.stdout"
-          environment:
-            http_proxy: ""
-            https_proxy: ""
-            ftp_proxy: ""
-            HTTP_PROXY: ""
-            HTTPS_PROXY: ""
-            FTP_PROXY: ""
-            ALL_PROXY: ""
-            all_proxy: ""
+        - name: Remove APT proxy configuration
+          ansible.builtin.file:
+            path: /etc/apt/apt.conf.d/80proxy
+            state: absent
 
-        - name: Install snapd
-          ansible.builtin.apt:
-            name: snapd
-            state: present
-          when: "'install ok installed' not in snapd_check.stdout"
-          environment:
-            http_proxy: ""
-            https_proxy: ""
-            ftp_proxy: ""
-            HTTP_PROXY: ""
-            HTTPS_PROXY: ""
-            FTP_PROXY: ""
-            ALL_PROXY: ""
-            all_proxy: ""
-
-        - name: Start snapd
-          ansible.builtin.systemd:
-            name: snapd
-            state: started
-            enabled: true
-
-        - name: Start snapd socket
-          ansible.builtin.systemd:
-            name: snapd.socket
-            state: started
-            enabled: true
-
-        - name: Wait for snapd
-          ansible.builtin.command:
-            cmd: snap version
-          register: snap_version
-          retries: 12
-          delay: 5
-          until: snap_version.rc == 0
-          changed_when: false
-
-        - name: Check WPS installation
-          ansible.builtin.command:
-            cmd: snap list wps-office-multilang
+        - name: Check whether WPS is already installed
+          ansible.builtin.shell: |
+            dpkg -l | grep -i '^ii  wps'
           register: wps_check
           changed_when: false
           failed_when: false
 
-        - name: Install WPS Office
-          ansible.builtin.command:
-            cmd: snap install wps-office-multilang
+        - name: Download WPS Office DEB
+          ansible.builtin.get_url:
+            url: "{{ wps_url }}"
+            dest: "{{ wps_deb }}"
+            mode: "0644"
           when: wps_check.rc != 0
-          environment:
-            http_proxy: ""
-            https_proxy: ""
-            ftp_proxy: ""
-            HTTP_PROXY: ""
-            HTTPS_PROXY: ""
-            FTP_PROXY: ""
-            ALL_PROXY: ""
-            all_proxy: ""
 
-        - name: Create WPS CLI symlinks
+        - name: Install WPS Office
+          ansible.builtin.apt:
+            deb: "{{ wps_deb }}"
+          when: wps_check.rc != 0
+
+        - name: Remove downloaded WPS package
           ansible.builtin.file:
-            src: "/snap/bin/wps-office-multilang.{{ item.src }}"
-            dest: "/usr/local/bin/{{ item.dest }}"
-            state: link
-            force: true
-          loop:
-            - { src: "wps", dest: "wps" }
-            - { src: "et", dest: "et" }
-            - { src: "wpp", dest: "wpp" }
-
-        - name: Find WPS desktop files
-          ansible.builtin.find:
-            paths: /var/lib/snapd/desktop/applications
-            patterns: "*wps*.desktop"
-          register: wps_desktop_files
-
-        - name: Create WPS desktop application links
-          ansible.builtin.file:
-            src: "{{ item.path }}"
-            dest: "/usr/share/applications/{{ item.path | basename }}"
-            state: link
-            force: true
-          loop: "{{ wps_desktop_files.files }}"
-
-        - name: Update desktop database
-          ansible.builtin.command:
-            cmd: update-desktop-database /usr/share/applications
-          changed_when: false
-          failed_when: false
+            path: "{{ wps_deb }}"
+            state: absent
 
       always:
 
