@@ -4,21 +4,18 @@
   become: true
   become_method: sudo
   gather_facts: false
+  # Prevents unreachable machines (like .97) from blocking or failing the rest of the batch
+  ignore_unreachable: true
 
   vars:
-    # 1. Update this to your direct GitHub Release download URL
-    # Format: https://github.com/<OWNER>/<REPO>/releases/download/<TAG>/wps-office_<VERSION>_amd64.deb
-    github_deb_url: "https://github.com/your-org/your-repo/releases/download/v1.0.0/wps-office_11.1.0.11733.XA_amd64.deb"
-    
-    # Optional: If your GitHub repo is private, supply a Personal Access Token (PAT)
-    # github_token: "ghp_xxxxxxxxxxxxxxxxxxxx"
-
+    # Your exact GitHub Release download URL
+    github_deb_url: "https://github.com/systemadmin-1p1/Awx_GIT/releases/download/wps-deb-11/wps-office_11.1.0.11733.XA_amd64.deb"
+    github_token: "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"
     temp_deb_path: "/tmp/wps-office.deb"
-    logged_in_user: "{{ ansible_user | default('ubuntu') }}"
 
   tasks:
 
-    # --- 1. Prevent Lock Contention ---
+    # --- 1. Clean Locks & Stop Background Updaters ---
     - name: Stop Puppet and APT background services
       ansible.builtin.systemd:
         name: "{{ item }}"
@@ -38,10 +35,10 @@
           sleep 2
         done
       changed_when: false
-      timeout: 60
+      timeout: 45
       failed_when: false
 
-    # --- 2. Check & Install WPS ---
+    # --- 2. Check, Fetch & Install WPS ---
     - block:
 
         - name: Check if WPS Office is already installed
@@ -55,16 +52,16 @@
           when: "'install ok installed' not in wps_installed.stdout"
           block:
 
-            - name: Download DEB directly from GitHub Release
+            - name: Download DEB from GitHub Release
               ansible.builtin.get_url:
                 url: "{{ github_deb_url }}"
                 dest: "{{ temp_deb_path }}"
+                headers:
+                  Authorization: "Bearer {{ github_token }}"
+                  Accept: "application/octet-stream"
                 mode: "0644"
                 timeout: 300
-                # Uncomment the headers block below if the GitHub repository is private:
-                # headers:
-                #   Authorization: "Bearer {{ github_token }}"
-                #   Accept: "application/octet-stream"
+                force: true
 
             - name: Install WPS Office deb package
               ansible.builtin.apt:
@@ -94,21 +91,21 @@
             patterns: "*wps*.desktop"
           register: wps_desktop_entries
 
-        - name: Ensure user Desktop directory exists
-          ansible.builtin.file:
-            path: "/home/{{ logged_in_user }}/Desktop"
-            state: directory
-            owner: "{{ logged_in_user }}"
-            mode: "0755"
+        - name: Identify active user desktop folders
+          ansible.builtin.find:
+            paths: /home
+            file_type: directory
+            recurse: false
+          register: user_home_dirs
 
-        - name: Copy WPS icons to user Desktop
+        - name: Copy WPS icons to each user's Desktop
           ansible.builtin.copy:
-            src: "{{ item.path }}"
-            dest: "/home/{{ logged_in_user }}/Desktop/{{ item.path | basename }}"
+            src: "{{ item.0.path }}"
+            dest: "{{ item.1.path }}/Desktop/{{ item.0.path | basename }}"
             remote_src: true
-            owner: "{{ logged_in_user }}"
             mode: "0755"
-          loop: "{{ wps_desktop_entries.files }}"
+          loop: "{{ wps_desktop_entries.files | product(user_home_dirs.files) | list }}"
+          failed_when: false
 
       always:
 
@@ -117,8 +114,6 @@
             name: puppet
             state: started
             enabled: true
-
-
 
 # ---
 # - name: Install WPS Office from GitHub
