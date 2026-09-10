@@ -1,25 +1,43 @@
 ---
-- name: Install WPS
+- name: Download and Deploy WPS Office
   hosts: all
-  become: true
-  gather_facts: false
+  become: yes
+  vars:
+    # Update this with the specific WPS .deb version URL you want
+    wps_download_url: "https://wdl1.psoffice.com/linux-website/soft/desktop/linux/m1030/wps-office_11.1.0.11723.XA_amd64.deb"
+    local_pkg_path: "/tmp/wps-office.deb"
+    remote_pkg_path: "/tmp/wps-office.deb"
 
   tasks:
+    - name: Download WPS deb on AWX pod (only once)
+      ansible.builtin.get_url:
+        url: "{{ wps_download_url }}"
+        dest: "{{ local_pkg_path }}"
+        mode: '0644'
+      delegate_to: localhost
+      run_once: true
+      become: no
 
-    - name: Check if WPS is already installed
-      ansible.builtin.shell:
-        cmd: dpkg -l | grep -i wps
-      register: wps_check
-      changed_when: false
-      failed_when: false
+    - name: Push WPS deb from AWX pod to desktop over SSH
+      ansible.builtin.copy:
+        src: "{{ local_pkg_path }}"
+        dest: "{{ remote_pkg_path }}"
+        mode: '0644'
 
-    - name: Run apt update
-      ansible.builtin.shell:
-        cmd: apt update
-      when: wps_check.rc != 0
-
-    - name: Install WPS
+    - name: Install WPS Office and resolve any missing system dependencies
       ansible.builtin.apt:
-        name: wps-office
+        deb: "{{ remote_pkg_path }}"
         state: present
-      when: wps_check.rc != 0
+
+    - name: Remove installer file from target desktop
+      ansible.builtin.file:
+        path: "{{ remote_pkg_path }}"
+        state: absent
+
+    - name: Clean up temporary installer on AWX runner pod
+      ansible.builtin.file:
+        path: "{{ local_pkg_path }}"
+        state: absent
+      delegate_to: localhost
+      run_once: true
+      become: no
