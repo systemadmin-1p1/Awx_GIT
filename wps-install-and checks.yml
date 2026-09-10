@@ -1,23 +1,22 @@
 ---
-- name: Identify actual AWX execution environment
+- name: Test AWX job container
   hosts: localhost
   connection: local
   gather_facts: false
 
   tasks:
-    - name: Show environment
-      ansible.builtin.shell: |
-        echo "HOSTNAME=$HOSTNAME"
-        echo "HOME=$HOME"
-        echo "PWD=$PWD"
-        echo "USER=$(whoami)"
-        echo "CONTAINER:"
-        cat /etc/hostname
-        echo "FILESYSTEM:"
-        ls -lah /
-      register: result
+
+    - name: Show hostname
+      ansible.builtin.command:
+        cmd: hostname
+      register: hostname_result
       changed_when: false
 
-    - name: Show result
+    - name: Keep job alive
+      ansible.builtin.command:
+        cmd: sleep 15
+      changed_when: false
+
+    - name: Show hostname
       ansible.builtin.debug:
-        var: result.stdout_lines
+        var: hostname_result.stdout
