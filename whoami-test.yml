@@ -6,157 +6,105 @@
 
   vars:
     rustdesk_user: "opoadmin"
-    rustdesk_config: "/home/opoadmin/.config/rustdesk/RustDesk2.toml"
+    rustdesk_user_config: "/home/opoadmin/.config/rustdesk/RustDesk2.toml"
+    rustdesk_root_config: "/root/.config/rustdesk/RustDesk2.toml"
     rustdesk_port: "21118"
     rustdesk_password: "Alb3rtp!nt0"
 
   tasks:
-
     - name: Check RustDesk installation
       ansible.builtin.command:
         cmd: rustdesk --version
       register: rustdesk_version
       changed_when: false
 
-    - name: Show RustDesk version
-      ansible.builtin.debug:
-        msg: "RustDesk version: {{ rustdesk_version.stdout }}"
+    - name: Ensure configuration directories exist
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        mode: '0755'
+      loop:
+        - "/home/{{ rustdesk_user }}/.config/rustdesk"
+        - "/root/.config/rustdesk"
 
-    - name: Check RustDesk configuration file
-      ansible.builtin.stat:
-        path: "{{ rustdesk_config }}"
-      register: rustdesk_config_file
-
-    - name: Stop if RustDesk configuration does not exist
-      ansible.builtin.fail:
-        msg: "RustDesk configuration file not found: {{ rustdesk_config }}"
-      when: not rustdesk_config_file.stat.exists
-
-    - name: Show current RustDesk configuration
-      ansible.builtin.shell: |
-        grep -E "^(direct-server|direct-access-port|verification-method)" \
-        "{{ rustdesk_config }}" || true
-      register: current_config
-      changed_when: false
-
-    - name: Display current configuration
-      ansible.builtin.debug:
-        var: current_config.stdout_lines
-
-    - name: Enable Direct IP Access
-      ansible.builtin.lineinfile:
-        path: "{{ rustdesk_config }}"
-        regexp: '^direct-server[[:space:]]*='
-        line: "direct-server = 'Y'"
-        insertafter: '^\[options\]'
-        owner: "{{ rustdesk_user }}"
-        group: "{{ rustdesk_user }}"
+    - name: Ensure config files exist
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        state: touch
+        owner: "{{ item.owner }}"
+        group: "{{ item.group }}"
         mode: '0600'
-      register: direct_server_config
+        modification_time: preserve
+        access_time: preserve
+      loop:
+        - { path: "{{ rustdesk_user_config }}", owner: "{{ rustdesk_user }}", group: "{{ rustdesk_user }}" }
+        - { path: "{{ rustdesk_root_config }}", owner: "root", group: "root" }
 
-    - name: Configure Direct IP Access Port
+    - name: Ensure [options] header exists in config files
       ansible.builtin.lineinfile:
-        path: "{{ rustdesk_config }}"
-        regexp: '^direct-access-port[[:space:]]*='
-        line: "direct-access-port = '{{ rustdesk_port }}'"
-        insertafter: '^\[options\]'
-        owner: "{{ rustdesk_user }}"
-        group: "{{ rustdesk_user }}"
-        mode: '0600'
-      register: direct_port_config
+        path: "{{ item }}"
+        line: "[options]"
+        insertbefore: BOF
+        state: present
+      loop:
+        - "{{ rustdesk_user_config }}"
+        - "{{ rustdesk_root_config }}"
 
-    - name: Configure Permanent Password authentication
+    - name: Configure Direct IP and verification settings
       ansible.builtin.lineinfile:
-        path: "{{ rustdesk_config }}"
-        regexp: '^verification-method[[:space:]]*='
-        line: "verification-method = 'use-permanent-password'"
+        path: "{{ item.0 }}"
+        regexp: "{{ item.1.regexp }}"
+        line: "{{ item.1.line }}"
         insertafter: '^\[options\]'
-        owner: "{{ rustdesk_user }}"
-        group: "{{ rustdesk_user }}"
-        mode: '0600'
-      register: verification_config
+        state: present
+      loop: "{{ [rustdesk_user_config, rustdesk_root_config] | product([
+          { 'regexp': '^direct-server[[:space:]]*=', 'line': \"direct-server = 'Y'\" },
+          { 'regexp': '^direct-access-port[[:space:]]*=', 'line': \"direct-access-port = '\" ~ rustdesk_port ~ \"'\" },
+          { 'regexp': '^verification-method[[:space:]]*=', 'line': \"verification-method = 'use-permanent-password'\" }
+        ]) | list }}"
 
-    - name: Set RustDesk permanent password
+    - name: Set RustDesk permanent password (Root & User)
       ansible.builtin.command:
-        argv:
-          - rustdesk
-          - --password
-          - "{{ rustdesk_password }}"
-      become_user: "{{ rustdesk_user }}"
-      environment:
-        HOME: "/home/{{ rustdesk_user }}"
-        XDG_CONFIG_HOME: "/home/{{ rustdesk_user }}/.config"
-      no_log: true
-      register: password_result
+        cmd: "rustdesk --password {{ rustdesk_password }}"
       changed_when: true
+      no_log: true
 
-    - name: Check RustDesk processes
+    - name: Allow Direct Access port through UFW if active
       ansible.builtin.shell: |
-        ps -ef | grep -i '[r]ustdesk'
-      register: rustdesk_process
-      changed_when: false
-      failed_when: false
-
-    - name: Show RustDesk processes
-      ansible.builtin.debug:
-        var: rustdesk_process.stdout_lines
-
-    - name: Check RustDesk listening ports
-      ansible.builtin.shell: |
-        ss -lntup | grep -E '(:21115|:21116|:21117|:21118)' || true
-      register: rustdesk_ports
+        if command -v ufw >/dev/null 2>&1 && ufw status | grep -q "Status: active"; then
+          ufw allow {{ rustdesk_port }}/tcp
+        fi
       changed_when: false
 
-    - name: Show RustDesk listening ports
-      ansible.builtin.debug:
-        var: rustdesk_ports.stdout_lines
+    - name: Ensure RustDesk systemd service is active and restarted
+      ansible.builtin.systemd:
+        name: rustdesk
+        state: restarted
+        enabled: true
+        daemon_reload: true
 
-    - name: Restart RustDesk user process
-      ansible.builtin.shell: |
-        pkill -u "{{ rustdesk_user }}" -x rustdesk || true
-        sleep 3
-        nohup rustdesk >/tmp/rustdesk-start.log 2>&1 &
-      become_user: "{{ rustdesk_user }}"
-      environment:
-        HOME: "/home/{{ rustdesk_user }}"
-        XDG_CONFIG_HOME: "/home/{{ rustdesk_user }}/.config"
-      when:
-        - direct_server_config.changed
-          or direct_port_config.changed
-          or verification_config.changed
-
-    - name: Wait for RustDesk process
+    - name: Pause to allow service socket initialization
       ansible.builtin.pause:
-        seconds: 5
+        seconds: 3
 
-    - name: Verify RustDesk process after configuration
+    - name: Verify RustDesk process is running
       ansible.builtin.shell: |
         ps -ef | grep -i '[r]ustdesk'
       register: rustdesk_process_after
       changed_when: false
-      failed_when: false
+      failed_when: rustdesk_process_after.stdout == ""
 
-    - name: Show RustDesk process after configuration
+    - name: Display running RustDesk processes
       ansible.builtin.debug:
         var: rustdesk_process_after.stdout_lines
 
-    - name: Verify RustDesk configuration
+    - name: Verify port 21118 is listening
       ansible.builtin.shell: |
-        grep -E "^(direct-server|direct-access-port|verification-method)" \
-        "{{ rustdesk_config }}"
-      register: rustdesk_settings
-      changed_when: false
-
-    - name: Display configured RustDesk settings
-      ansible.builtin.debug:
-        var: rustdesk_settings.stdout_lines
-
-    - name: Verify RustDesk ports
-      ansible.builtin.shell: |
-        ss -lntup | grep -E '(:21115|:21116|:21117|:21118)' || true
+        ss -lntup | grep -E ':{{ rustdesk_port }}\b'
       register: final_ports
       changed_when: false
+      failed_when: final_ports.stdout == ""
 
-    - name: Display RustDesk ports
+    - name: Display listening port confirmation
       ansible.builtin.debug:
         var: final_ports.stdout_lines
