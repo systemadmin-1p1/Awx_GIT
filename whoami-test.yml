@@ -25,6 +25,3 @@
       - "{{ ram_info.stdout }}"
       - "Disk:"
       - "{{ disk_type.stdout }}"
-
-
-      
