@@ -1,65 +1,63 @@
 ---
-- name: GUI Login for opoadmin on Linux Lite
+- name: Install WPS Office
   hosts: all
-  become: true
+  become: yes
   gather_facts: false
 
-  vars:
-    target_user: "opoadmin"
-    target_pass: "Opo@1234"
-
   tasks:
-    - name: Update apt package index
-      ansible.builtin.command:
-        cmd: apt-get update
+
+    - name: Check if WPS Office is already installed
+      ansible.builtin.shell:
+        cmd: dpkg-query -W -f='${Status}' wps-office 2>/dev/null
+      register: wps_check
       changed_when: false
+      failed_when: false
 
-    - name: Install xdotool
-      ansible.builtin.apt:
-        name: xdotool
-        state: present
-
-    - name: Inject credentials into LightDM greeter
-      ansible.builtin.shell: |
-        # 1. Detect Xorg auth cookie and display number
-        XORG_LINE=$(ps aux | grep -E '[X]org.*-auth' | tail -n1)
-        DISPLAY_NUM=$(echo "$XORG_LINE" | grep -oE ':[0-9]+' | head -n1)
-        XAUTH=$(echo "$XORG_LINE" | sed -n 's/.*-auth \([^ ]*\).*/\1/p' | head -n1)
-        [ -z "$DISPLAY_NUM" ] && DISPLAY_NUM=":0"
-        if [ -z "$XAUTH" ] || [ ! -f "$XAUTH" ]; then
-            XAUTH=$(ls /var/run/lightdm/root/* /run/lightdm/root/* 2>/dev/null | head -n1)
-        fi
-
-        export DISPLAY="$DISPLAY_NUM"
-        export XAUTHORITY="$XAUTH"
-
-        # 2. Wake screen and clear input buffers
-        xdotool key Escape
-        sleep 0.5
-        xdotool key Escape
-        sleep 0.5
-
-        # 3. Enter username and advance to password
-        xdotool type --delay 100 "{{ target_user }}"
-        sleep 0.5
-        xdotool key Return
-        sleep 1
-
-        # 4. Enter password and submit
-        xdotool type --delay 100 "{{ target_pass }}"
-        sleep 0.5
-        xdotool key Return
-        sleep 5
-      args:
-        executable: /bin/bash
-
-    - name: Verify opoadmin session creation
-      ansible.builtin.shell: |
-        loginctl list-sessions --no-legend | grep -w "{{ target_user }}"
-      register: session_check
-      changed_when: false
-      failed_when: session_check.stdout == ""
-
-    - name: Display logged-in session details
+    - name: Show WPS installation status
       ansible.builtin.debug:
-        var: session_check.stdout_lines
+        msg: >-
+          {{ inventory_hostname }}:
+          {% if wps_check.stdout == 'install ok installed' %}
+          WPS Office is already installed. Skipping installation.
+          {% else %}
+          WPS Office is not installed. Starting installation.
+          {% endif %}
+
+    - name: Download WPS deb on AWX runner
+      ansible.builtin.get_url:
+        url: "https://github.com/systemadmin-1p1/Awx_GIT/releases/download/wps-deb-11/wps-office_11.1.0.11733.XA_amd64.deb"
+        dest: /tmp/wps-office.deb
+      delegate_to: localhost
+      run_once: true
+      become: no
+      when: wps_check.stdout != 'install ok installed'
+
+    - name: Transfer deb to target machine
+      ansible.builtin.copy:
+        src: /tmp/wps-office.deb
+        dest: /tmp/wps-office.deb
+        mode: '0644'
+      when: wps_check.stdout != 'install ok installed'
+
+    - name: Unpack deb package
+      ansible.builtin.command:
+        cmd: dpkg --unpack /tmp/wps-office.deb
+      when: wps_check.stdout != 'install ok installed'
+
+    - name: Comment out buggy chgrp command in postinst script
+      ansible.builtin.replace:
+        path: /var/lib/dpkg/info/wps-office.postinst
+        regexp: '^(.*chgrp.*)$'
+        replace: '# \1'
+      when: wps_check.stdout != 'install ok installed'
+
+    - name: Complete package configuration
+      ansible.builtin.command:
+        cmd: dpkg --configure wps-office
+      when: wps_check.stdout != 'install ok installed'
+
+    - name: Clean up installer deb
+      ansible.builtin.file:
+        path: /tmp/wps-office.deb
+        state: absent
+      when: wps_check.stdout != 'install ok installed'
