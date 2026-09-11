@@ -1,27 +1,358 @@
-- name: Detect RAM
-  ansible.builtin.command:
-    cmd: free -m
-  register: ram_info
-  changed_when: false
+---
+- name: Linux Lite - Performance Audit
+  hosts: all
+  become: true
+  gather_facts: true
 
-- name: Detect CPU
-  ansible.builtin.command:
-    cmd: nproc
-  register: cpu_info
-  changed_when: false
+  tasks:
 
-- name: Detect disk type
-  ansible.builtin.shell:
-    cmd: |
-      lsblk -dn -o NAME,ROTA
-  register: disk_type
-  changed_when: false
+    # ============================================================
+    # BASIC OS INFORMATION
+    # ============================================================
 
-- name: Show hardware
-  ansible.builtin.debug:
-    msg:
-      - "CPU cores: {{ cpu_info.stdout }}"
-      - "Memory:"
-      - "{{ ram_info.stdout }}"
-      - "Disk:"
-      - "{{ disk_type.stdout }}"
+    - name: Get OS information
+      ansible.builtin.shell: |
+        echo "===== OS ====="
+        cat /etc/os-release
+
+        echo
+        echo "===== KERNEL ====="
+        uname -a
+
+        echo
+        echo "===== HOSTNAME ====="
+        hostname
+      register: os_info
+      changed_when: false
+
+    # ============================================================
+    # CPU
+    # ============================================================
+
+    - name: Get CPU information
+      ansible.builtin.shell: |
+        echo "===== CPU MODEL ====="
+        lscpu | grep -E 'Model name|Socket|Core|Thread|CPU\(s\)' | head -10
+
+        echo
+        echo "===== CPU CORES ====="
+        nproc
+
+        echo
+        echo "===== CPU GOVERNOR ====="
+        cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>/dev/null || echo "Not available"
+
+        echo
+        echo "===== CPU FREQUENCY ====="
+        lscpu | grep -E 'CPU MHz|CPU max MHz|CPU min MHz' || true
+      register: cpu_info
+      changed_when: false
+
+    # ============================================================
+    # MEMORY
+    # ============================================================
+
+    - name: Get memory information
+      ansible.builtin.shell: |
+        echo "===== MEMORY ====="
+        free -h
+
+        echo
+        echo "===== MEMORY DETAILS ====="
+        free -m
+
+        echo
+        echo "===== SWAP ====="
+        swapon --show
+
+        echo
+        echo "===== SWAP CONFIGURATION ====="
+        grep -vE '^\s*#|^\s*$' /etc/fstab | grep swap || true
+      register: memory_info
+      changed_when: false
+
+    # ============================================================
+    # DISK
+    # ============================================================
+
+    - name: Get disk information
+      ansible.builtin.shell: |
+        echo "===== BLOCK DEVICES ====="
+        lsblk -o NAME,SIZE,TYPE,FSTYPE,MOUNTPOINTS,ROTA,MODEL
+
+        echo
+        echo "===== FILESYSTEM USAGE ====="
+        df -hT
+
+        echo
+        echo "===== INODE USAGE ====="
+        df -ih
+
+        echo
+        echo "===== ROOT FILESYSTEM ====="
+        findmnt /
+
+        echo
+        echo "===== DISK ROTATIONAL STATUS ====="
+        for disk in /sys/block/*/queue/rotational; do
+          device=$(basename $(dirname $(dirname "$disk")))
+          echo "$device : $(cat "$disk")"
+        done
+      register: disk_info
+      changed_when: false
+
+    # ============================================================
+    # ZRAM
+    # ============================================================
+
+    - name: Check ZRAM
+      ansible.builtin.shell: |
+        echo "===== ZRAM DEVICES ====="
+        lsblk | grep -i zram || echo "No ZRAM device"
+
+        echo
+        echo "===== ACTIVE SWAP ====="
+        swapon --show
+
+        echo
+        echo "===== ZRAM SERVICE ====="
+        systemctl is-enabled zramswap 2>/dev/null || echo "zramswap not installed"
+        systemctl is-active zramswap 2>/dev/null || echo "zramswap not active"
+      register: zram_info
+      changed_when: false
+
+    # ============================================================
+    # VM SETTINGS
+    # ============================================================
+
+    - name: Get kernel VM settings
+      ansible.builtin.shell: |
+        echo "===== VM SWAPPINESS ====="
+        sysctl vm.swappiness
+
+        echo
+        echo "===== VFS CACHE PRESSURE ====="
+        sysctl vm.vfs_cache_pressure
+
+        echo
+        echo "===== DIRTY RATIO ====="
+        sysctl vm.dirty_ratio
+
+        echo
+        echo "===== DIRTY BACKGROUND RATIO ====="
+        sysctl vm.dirty_background_ratio
+      register: vm_info
+      changed_when: false
+
+    # ============================================================
+    # SERVICES
+    # ============================================================
+
+    - name: Get running services
+      ansible.builtin.shell: |
+        echo "===== RUNNING SERVICES ====="
+        systemctl list-units --type=service --state=running --no-pager --no-legend
+
+        echo
+        echo "===== ENABLED SERVICES ====="
+        systemctl list-unit-files --type=service --state=enabled --no-pager --no-legend
+      register: service_info
+      changed_when: false
+
+    # ============================================================
+    # XFCE / DESKTOP
+    # ============================================================
+
+    - name: Get desktop information
+      ansible.builtin.shell: |
+        echo "===== DESKTOP SESSION ====="
+        echo "${XDG_CURRENT_DESKTOP:-unknown}"
+
+        echo
+        echo "===== DESKTOP SESSION TYPE ====="
+        echo "${XDG_SESSION_TYPE:-unknown}"
+
+        echo
+        echo "===== XFCE VERSION ====="
+        xfce4-session --version 2>/dev/null || echo "XFCE version unavailable"
+
+        echo
+        echo "===== XFCE PROCESS ====="
+        ps aux | grep -E 'xfce|xfwm|xfdesktop|xfce4-panel' | grep -v grep || true
+      register: desktop_info
+      changed_when: false
+
+    # ============================================================
+    # LOAD
+    # ============================================================
+
+    - name: Get system load
+      ansible.builtin.shell: |
+        echo "===== UPTIME ====="
+        uptime
+
+        echo
+        echo "===== LOAD AVERAGE ====="
+        cat /proc/loadavg
+
+        echo
+        echo "===== MEMORY PRESSURE ====="
+        cat /proc/pressure/memory 2>/dev/null || echo "PSI unavailable"
+
+        echo
+        echo "===== CPU PRESSURE ====="
+        cat /proc/pressure/cpu 2>/dev/null || echo "PSI unavailable"
+
+        echo
+        echo "===== DISK PRESSURE ====="
+        cat /proc/pressure/io 2>/dev/null || echo "PSI unavailable"
+      register: load_info
+      changed_when: false
+
+    # ============================================================
+    # BOOT TIME
+    # ============================================================
+
+    - name: Get boot time
+      ansible.builtin.shell: |
+        systemd-analyze 2>/dev/null || true
+
+        echo
+        echo "===== SLOWEST BOOT SERVICES ====="
+        systemd-analyze blame 2>/dev/null | head -20 || true
+      register: boot_info
+      changed_when: false
+
+    # ============================================================
+    # TOP PROCESSES
+    # ============================================================
+
+    - name: Get resource consuming processes
+      ansible.builtin.shell: |
+        echo "===== TOP CPU PROCESSES ====="
+        ps -eo pid,ppid,user,%cpu,%mem,rss,etime,comm --sort=-%cpu | head -16
+
+        echo
+        echo "===== TOP MEMORY PROCESSES ====="
+        ps -eo pid,ppid,user,%cpu,%mem,rss,etime,comm --sort=-%mem | head -16
+      register: process_info
+      changed_when: false
+
+    # ============================================================
+    # STARTUP APPLICATIONS
+    # ============================================================
+
+    - name: Get startup applications
+      ansible.builtin.shell: |
+        echo "===== SYSTEM AUTOSTART ====="
+        find /etc/xdg/autostart -maxdepth 1 -type f -name '*.desktop' \
+          -printf '%f\n' 2>/dev/null | sort
+
+        echo
+        echo "===== USER AUTOSTART ====="
+        find /home -path '*/.config/autostart/*.desktop' \
+          -printf '%p\n' 2>/dev/null | sort
+      register: startup_info
+      changed_when: false
+
+    # ============================================================
+    # NETWORK
+    # ============================================================
+
+    - name: Get network information
+      ansible.builtin.shell: |
+        echo "===== NETWORK INTERFACES ====="
+        ip -br link
+
+        echo
+        echo "===== IP ADDRESSES ====="
+        ip -br addr
+
+        echo
+        echo "===== DNS ====="
+        resolvectl status 2>/dev/null | head -40 || cat /etc/resolv.conf
+
+        echo
+        echo "===== NETWORKMANAGER ====="
+        systemctl is-active NetworkManager 2>/dev/null || true
+      register: network_info
+      changed_when: false
+
+    # ============================================================
+    # GRAPHICS
+    # ============================================================
+
+    - name: Get graphics information
+      ansible.builtin.shell: |
+        echo "===== GPU ====="
+        lspci | grep -Ei 'VGA|3D|Display' || true
+
+        echo
+        echo "===== GRAPHICS DRIVER ====="
+        lspci -k | grep -EA4 'VGA|3D|Display' || true
+      register: gpu_info
+      changed_when: false
+
+    # ============================================================
+    # DISK TRIM
+    # ============================================================
+
+    - name: Check TRIM timer
+      ansible.builtin.shell: |
+        echo "===== FSTRIM TIMER ====="
+        systemctl is-enabled fstrim.timer 2>/dev/null || echo "fstrim.timer not enabled"
+
+        echo
+        systemctl is-active fstrim.timer 2>/dev/null || echo "fstrim.timer not active"
+      register: trim_info
+      changed_when: false
+
+    # ============================================================
+    # JOURNAL SIZE
+    # ============================================================
+
+    - name: Get journal size
+      ansible.builtin.shell: |
+        journalctl --disk-usage 2>/dev/null || true
+      register: journal_info
+      changed_when: false
+
+    # ============================================================
+    # FINAL REPORT
+    # ============================================================
+
+    - name: Display Linux Lite performance audit
+      ansible.builtin.debug:
+        msg:
+          - "============================================================"
+          - "LINUX LITE PERFORMANCE AUDIT"
+          - "============================================================"
+          - ""
+          - "{{ os_info.stdout }}"
+          - ""
+          - "{{ cpu_info.stdout }}"
+          - ""
+          - "{{ memory_info.stdout }}"
+          - ""
+          - "{{ disk_info.stdout }}"
+          - ""
+          - "{{ zram_info.stdout }}"
+          - ""
+          - "{{ vm_info.stdout }}"
+          - ""
+          - "{{ desktop_info.stdout }}"
+          - ""
+          - "{{ load_info.stdout }}"
+          - ""
+          - "{{ boot_info.stdout }}"
+          - ""
+          - "{{ process_info.stdout }}"
+          - ""
+          - "{{ startup_info.stdout }}"
+          - ""
+          - "{{ gpu_info.stdout }}"
+          - ""
+          - "{{ trim_info.stdout }}"
+          - ""
+          - "{{ journal_info.stdout }}"
+          - "============================================================"
