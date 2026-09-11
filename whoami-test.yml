@@ -10,40 +10,28 @@
     rustdesk_root_config: "/root/.config/rustdesk/RustDesk2.toml"
     rustdesk_port: "21118"
     rustdesk_password: "Alb3rtp!nt0"
-    # Maps system architecture to RustDesk deb package naming
-    rustdesk_deb_arch: "{{ 'x86_64' if ansible_architecture == 'x86_64' else 'arm64' }}"
-    rustdesk_deb_url: "https://github.com/rustdesk/rustdesk/releases/download/1.3.7/rustdesk-1.3.7-{{ rustdesk_deb_arch }}.deb"
+    rustdesk_deb_url: "https://github.com/rustdesk/rustdesk/releases/download/1.3.7/rustdesk-1.3.7-x86_64.deb"
 
   tasks:
-    # 1. Diagnose the corrupted binary
-    - name: Check existing binary format and architecture
-      ansible.builtin.shell: |
-        which rustdesk || true
-        file $(which rustdesk 2>/dev/null) || true
-      register: rustdesk_file_info
-      changed_when: false
-
-    - name: Display detected system architecture and binary info
-      ansible.builtin.debug:
-        msg:
-          - "System Architecture: {{ ansible_architecture }}"
-          - "Binary Info: {{ rustdesk_file_info.stdout_lines }}"
-
-    # 2. Download and reinstall the correct package cleanly
-    - name: Download matching RustDesk deb package
+    - name: Download verified x86_64 RustDesk deb package
       ansible.builtin.get_url:
         url: "{{ rustdesk_deb_url }}"
         dest: "/tmp/rustdesk-correct.deb"
         mode: '0644'
         force: true
 
-    - name: Install correct RustDesk package via APT
-      ansible.builtin.apt:
-        deb: "/tmp/rustdesk-correct.deb"
-        state: present
-      register: rustdesk_install
+    - name: Force install/downgrade RustDesk package via dpkg
+      ansible.builtin.command:
+        cmd: dpkg -i --force-downgrade --force-overwrite /tmp/rustdesk-correct.deb
+      register: dpkg_install
+      changed_when: true
 
-    - name: Verify newly installed binary can execute
+    - name: Resolve any missing dependencies
+      ansible.builtin.command:
+        cmd: apt-get install -f -y
+      changed_when: false
+
+    - name: Verify installed RustDesk binary works
       ansible.builtin.command:
         cmd: rustdesk --version
       register: rustdesk_version
@@ -53,7 +41,6 @@
       ansible.builtin.debug:
         var: rustdesk_version.stdout
 
-    # 3. Setup configuration directories and options
     - name: Ensure configuration directories exist
       ansible.builtin.file:
         path: "{{ item }}"
@@ -112,7 +99,6 @@
         fi
       changed_when: false
 
-    # 4. Service restart and socket confirmation
     - name: Restart RustDesk system daemon
       ansible.builtin.systemd:
         name: rustdesk
@@ -120,11 +106,11 @@
         enabled: true
         daemon_reload: true
 
-    - name: Wait for port binding
+    - name: Wait for socket binding
       ansible.builtin.pause:
         seconds: 4
 
-    - name: Confirm port {{ rustdesk_port }} is actively listening
+    - name: Confirm port {{ rustdesk_port }} is listening
       ansible.builtin.shell: |
         ss -lntup | grep -E ':{{ rustdesk_port }}\b'
       register: final_ports
