@@ -5,32 +5,26 @@
   gather_facts: false
 
   vars:
-    # Set your company proxy URL (leave blank if proxy is already in /etc/apt/apt.conf)
-    company_http_proxy: "http://your-company-proxy:port"
-    company_https_proxy: "http://your-company-proxy:port"
     target_user: "opoadmin"
     target_pass: "Opo@1234"
 
-  environment:
-    http_proxy: "{{ company_http_proxy }}"
-    https_proxy: "{{ company_https_proxy }}"
-    no_proxy: "localhost,127.0.0.1,172.24.0.0/16"
-
   tasks:
-    - name: Install xdotool via company proxy
+    - name: Update apt package index
+      ansible.builtin.command:
+        cmd: apt-get update
+      changed_when: false
+
+    - name: Install xdotool
       ansible.builtin.apt:
         name: xdotool
         state: present
-        update_cache: yes
-        cache_valid_time: 3600
 
     - name: Inject credentials into LightDM greeter
       ansible.builtin.shell: |
-        # 1. Locate Xorg authorization and active display
+        # 1. Detect Xorg auth cookie and display number
         XORG_LINE=$(ps aux | grep -E '[X]org.*-auth' | tail -n1)
         DISPLAY_NUM=$(echo "$XORG_LINE" | grep -oE ':[0-9]+' | head -n1)
         XAUTH=$(echo "$XORG_LINE" | sed -n 's/.*-auth \([^ ]*\).*/\1/p' | head -n1)
-
         [ -z "$DISPLAY_NUM" ] && DISPLAY_NUM=":0"
         if [ -z "$XAUTH" ] || [ ! -f "$XAUTH" ]; then
             XAUTH=$(ls /var/run/lightdm/root/* /run/lightdm/root/* 2>/dev/null | head -n1)
@@ -39,27 +33,33 @@
         export DISPLAY="$DISPLAY_NUM"
         export XAUTHORITY="$XAUTH"
 
-        # 2. Focus greeter and submit credentials
+        # 2. Wake screen and clear input buffers
         xdotool key Escape
         sleep 0.5
+        xdotool key Escape
+        sleep 0.5
+
+        # 3. Enter username and advance to password
         xdotool type --delay 100 "{{ target_user }}"
         sleep 0.5
         xdotool key Return
         sleep 1
+
+        # 4. Enter password and submit
         xdotool type --delay 100 "{{ target_pass }}"
         sleep 0.5
         xdotool key Return
-        sleep 4
+        sleep 5
       args:
         executable: /bin/bash
 
-    - name: Verify opoadmin graphical session
+    - name: Verify opoadmin session creation
       ansible.builtin.shell: |
         loginctl list-sessions --no-legend | grep -w "{{ target_user }}"
       register: session_check
       changed_when: false
       failed_when: session_check.stdout == ""
 
-    - name: Show active session confirmation
+    - name: Display logged-in session details
       ansible.builtin.debug:
         var: session_check.stdout_lines
