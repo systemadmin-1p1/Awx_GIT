@@ -1,8 +1,8 @@
 ---
-- name: Configure RustDesk on desktops
+- name: Fix RustDesk Installation and Configure Direct GUI Access
   hosts: all
   become: true
-  gather_facts: false
+  gather_facts: true
 
   vars:
     rustdesk_user: "opoadmin"
@@ -10,14 +10,50 @@
     rustdesk_root_config: "/root/.config/rustdesk/RustDesk2.toml"
     rustdesk_port: "21118"
     rustdesk_password: "Alb3rtp!nt0"
+    # Maps system architecture to RustDesk deb package naming
+    rustdesk_deb_arch: "{{ 'x86_64' if ansible_architecture == 'x86_64' else 'arm64' }}"
+    rustdesk_deb_url: "https://github.com/rustdesk/rustdesk/releases/download/1.3.7/rustdesk-1.3.7-{{ rustdesk_deb_arch }}.deb"
 
   tasks:
-    - name: Check RustDesk installation
+    # 1. Diagnose the corrupted binary
+    - name: Check existing binary format and architecture
+      ansible.builtin.shell: |
+        which rustdesk || true
+        file $(which rustdesk 2>/dev/null) || true
+      register: rustdesk_file_info
+      changed_when: false
+
+    - name: Display detected system architecture and binary info
+      ansible.builtin.debug:
+        msg:
+          - "System Architecture: {{ ansible_architecture }}"
+          - "Binary Info: {{ rustdesk_file_info.stdout_lines }}"
+
+    # 2. Download and reinstall the correct package cleanly
+    - name: Download matching RustDesk deb package
+      ansible.builtin.get_url:
+        url: "{{ rustdesk_deb_url }}"
+        dest: "/tmp/rustdesk-correct.deb"
+        mode: '0644'
+        force: true
+
+    - name: Install correct RustDesk package via APT
+      ansible.builtin.apt:
+        deb: "/tmp/rustdesk-correct.deb"
+        state: present
+      register: rustdesk_install
+
+    - name: Verify newly installed binary can execute
       ansible.builtin.command:
         cmd: rustdesk --version
       register: rustdesk_version
       changed_when: false
 
+    - name: Show verified RustDesk version
+      ansible.builtin.debug:
+        var: rustdesk_version.stdout
+
+    # 3. Setup configuration directories and options
     - name: Ensure configuration directories exist
       ansible.builtin.file:
         path: "{{ item }}"
@@ -27,7 +63,7 @@
         - "/home/{{ rustdesk_user }}/.config/rustdesk"
         - "/root/.config/rustdesk"
 
-    - name: Ensure config files exist
+    - name: Ensure configuration files exist
       ansible.builtin.file:
         path: "{{ item.path }}"
         state: touch
@@ -40,7 +76,7 @@
         - { path: "{{ rustdesk_user_config }}", owner: "{{ rustdesk_user }}", group: "{{ rustdesk_user }}" }
         - { path: "{{ rustdesk_root_config }}", owner: "root", group: "root" }
 
-    - name: Ensure [options] header exists in config files
+    - name: Ensure [options] section header exists
       ansible.builtin.lineinfile:
         path: "{{ item }}"
         line: "[options]"
@@ -50,7 +86,7 @@
         - "{{ rustdesk_user_config }}"
         - "{{ rustdesk_root_config }}"
 
-    - name: Configure Direct IP and verification settings
+    - name: Configure Direct IP Access and verification method
       ansible.builtin.lineinfile:
         path: "{{ item.0 }}"
         regexp: "{{ item.1.regexp }}"
@@ -63,42 +99,32 @@
           { 'regexp': '^verification-method[[:space:]]*=', 'line': \"verification-method = 'use-permanent-password'\" }
         ]) | list }}"
 
-    - name: Set RustDesk permanent password (Root & User)
+    - name: Set permanent password
       ansible.builtin.command:
         cmd: "rustdesk --password {{ rustdesk_password }}"
       changed_when: true
       no_log: true
 
-    - name: Allow Direct Access port through UFW if active
+    - name: Allow port {{ rustdesk_port }} in UFW if firewall is enabled
       ansible.builtin.shell: |
         if command -v ufw >/dev/null 2>&1 && ufw status | grep -q "Status: active"; then
           ufw allow {{ rustdesk_port }}/tcp
         fi
       changed_when: false
 
-    - name: Ensure RustDesk systemd service is active and restarted
+    # 4. Service restart and socket confirmation
+    - name: Restart RustDesk system daemon
       ansible.builtin.systemd:
         name: rustdesk
         state: restarted
         enabled: true
         daemon_reload: true
 
-    - name: Pause to allow service socket initialization
+    - name: Wait for port binding
       ansible.builtin.pause:
-        seconds: 3
+        seconds: 4
 
-    - name: Verify RustDesk process is running
-      ansible.builtin.shell: |
-        ps -ef | grep -i '[r]ustdesk'
-      register: rustdesk_process_after
-      changed_when: false
-      failed_when: rustdesk_process_after.stdout == ""
-
-    - name: Display running RustDesk processes
-      ansible.builtin.debug:
-        var: rustdesk_process_after.stdout_lines
-
-    - name: Verify port 21118 is listening
+    - name: Confirm port {{ rustdesk_port }} is actively listening
       ansible.builtin.shell: |
         ss -lntup | grep -E ':{{ rustdesk_port }}\b'
       register: final_ports
