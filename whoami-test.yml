@@ -1,167 +1,65 @@
 ---
-- name: Inject RustDesk into Live Desktop Session
+- name: GUI Login for opoadmin on Linux Lite
   hosts: all
   become: true
-  gather_facts: true
+  gather_facts: false
 
   vars:
-    rustdesk_port: "21118"
-    rustdesk_password: "Alb3rtp!nt0"
+    # Set your company proxy URL (leave blank if proxy is already in /etc/apt/apt.conf)
+    company_http_proxy: "http://your-company-proxy:port"
+    company_https_proxy: "http://your-company-proxy:port"
+    target_user: "opoadmin"
+    target_pass: "Opo@1234"
+
+  environment:
+    http_proxy: "{{ company_http_proxy }}"
+    https_proxy: "{{ company_https_proxy }}"
+    no_proxy: "localhost,127.0.0.1,172.24.0.0/16"
 
   tasks:
-    # 1. Dynamically identify the logged-in candidate desktop user
-    - name: Detect active graphical desktop user
-      ansible.builtin.shell: |
-        USER=$(who | grep -E '\(:0|\(:0.0|tty[0-9]' | awk '{print $1}' | head -n1)
-        if [ -z "$USER" ]; then
-          USER=$(loginctl list-sessions --no-legend 2>/dev/null | awk '{print $3}' | head -n1)
-        fi
-        if [ -z "$USER" ]; then
-          USER="opoadmin"
-        fi
-        echo "$USER"
-      register: detected_user
-      changed_when: false
-
-    - name: Get candidate UID and home directory
-      ansible.builtin.getent:
-        database: passwd
-        key: "{{ detected_user.stdout | trim }}"
-
-    - name: Set session facts
-      ansible.builtin.set_fact:
-        target_user: "{{ detected_user.stdout | trim }}"
-        target_uid: "{{ getent_passwd[detected_user.stdout | trim][1] }}"
-        target_home: "{{ getent_passwd[detected_user.stdout | trim][4] }}"
-
-    - name: Detect Xauthority file location
-      ansible.builtin.shell: |
-        if [ -f "{{ target_home }}/.Xauthority" ]; then
-          echo "{{ target_home }}/.Xauthority"
-        elif [ -f "/run/user/{{ target_uid }}/gdm/Xauthority" ]; then
-          echo "/run/user/{{ target_uid }}/gdm/Xauthority"
-        else
-          find /run/user/{{ target_uid }} -name "*Xauth*" 2>/dev/null | head -n1 || echo "{{ target_home }}/.Xauthority"
-        fi
-      register: xauth_path
-      changed_when: false
-
-    - name: Set Xauthority fact
-      ansible.builtin.set_fact:
-        target_xauth: "{{ xauth_path.stdout | trim }}"
-
-    - name: Display detected session details
-      ansible.builtin.debug:
-        msg:
-          - "Target User: {{ target_user }}"
-          - "Target UID: {{ target_uid }}"
-          - "Target Home: {{ target_home }}"
-          - "Xauthority: {{ target_xauth }}"
-
-    # 2. Configure Direct Access and Password for the active candidate user
-    - name: Ensure RustDesk configuration directory exists for candidate
-      ansible.builtin.file:
-        path: "{{ target_home }}/.config/rustdesk"
-        state: directory
-        owner: "{{ target_user }}"
-        group: "{{ target_user }}"
-        mode: '0755'
-
-    - name: Ensure candidate config file exists
-      ansible.builtin.file:
-        path: "{{ target_home }}/.config/rustdesk/RustDesk2.toml"
-        state: touch
-        owner: "{{ target_user }}"
-        group: "{{ target_user }}"
-        mode: '0600'
-        modification_time: preserve
-        access_time: preserve
-
-    - name: Ensure [options] header exists
-      ansible.builtin.lineinfile:
-        path: "{{ target_home }}/.config/rustdesk/RustDesk2.toml"
-        line: "[options]"
-        insertbefore: BOF
+    - name: Install xdotool via company proxy
+      ansible.builtin.apt:
+        name: xdotool
         state: present
+        update_cache: yes
+        cache_valid_time: 3600
 
-    - name: Enable Direct IP Access in user config
-      ansible.builtin.lineinfile:
-        path: "{{ target_home }}/.config/rustdesk/RustDesk2.toml"
-        regexp: "{{ item.regexp }}"
-        line: "{{ item.line }}"
-        insertafter: '^\[options\]'
-        state: present
-      loop:
-        - { regexp: '^direct-server[[:space:]]*=', line: "direct-server = 'Y'" }
-        - { regexp: '^direct-access-port[[:space:]]*=', line: "direct-access-port = '{{ rustdesk_port }}'" }
-        - { regexp: '^verification-method[[:space:]]*=', line: "verification-method = 'use-permanent-password'" }
-
-    - name: Set permanent password under candidate profile
-      ansible.builtin.command:
-        cmd: "rustdesk --password {{ rustdesk_password }}"
-      become_user: "{{ target_user }}"
-      environment:
-        HOME: "{{ target_home }}"
-        XDG_CONFIG_HOME: "{{ target_home }}/.config"
-      changed_when: true
-      no_log: true
-
-    # 3. Create and push the systemd live session service
-    - name: Create systemd live GUI session unit
-      ansible.builtin.copy:
-        dest: /etc/systemd/system/rustdesk-gui.service
-        owner: root
-        group: root
-        mode: '0644'
-        content: |
-          [Unit]
-          Description=RustDesk Live Desktop Session Injector
-          After=network.target graphical.target rustdesk.service
-          Wants=rustdesk.service
-
-          [Service]
-          Type=simple
-          User={{ target_user }}
-          Group={{ target_user }}
-          Environment=DISPLAY=:0
-          Environment=XAUTHORITY={{ target_xauth }}
-          Environment=XDG_RUNTIME_DIR=/run/user/{{ target_uid }}
-          Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/{{ target_uid }}/bus
-          ExecStart=/usr/bin/rustdesk
-          Restart=always
-          RestartSec=3
-
-          [Install]
-          WantedBy=graphical.target
-
-    - name: Reload systemd daemon
-      ansible.builtin.systemd:
-        daemon_reload: true
-
-    - name: Ensure root helper service is active
-      ansible.builtin.systemd:
-        name: rustdesk
-        state: started
-        enabled: true
-
-    - name: Start RustDesk live session service
-      ansible.builtin.systemd:
-        name: rustdesk-gui
-        state: restarted
-        enabled: true
-
-    - name: Wait for socket initialization
-      ansible.builtin.pause:
-        seconds: 4
-
-    # 4. Verify socket listener
-    - name: Verify port {{ rustdesk_port }} is actively listening
+    - name: Inject credentials into LightDM greeter
       ansible.builtin.shell: |
-        ss -lntup | grep -E ':{{ rustdesk_port }}\b'
-      register: listening_port
-      changed_when: false
-      failed_when: listening_port.stdout == ""
+        # 1. Locate Xorg authorization and active display
+        XORG_LINE=$(ps aux | grep -E '[X]org.*-auth' | tail -n1)
+        DISPLAY_NUM=$(echo "$XORG_LINE" | grep -oE ':[0-9]+' | head -n1)
+        XAUTH=$(echo "$XORG_LINE" | sed -n 's/.*-auth \([^ ]*\).*/\1/p' | head -n1)
 
-    - name: Confirm listening socket
+        [ -z "$DISPLAY_NUM" ] && DISPLAY_NUM=":0"
+        if [ -z "$XAUTH" ] || [ ! -f "$XAUTH" ]; then
+            XAUTH=$(ls /var/run/lightdm/root/* /run/lightdm/root/* 2>/dev/null | head -n1)
+        fi
+
+        export DISPLAY="$DISPLAY_NUM"
+        export XAUTHORITY="$XAUTH"
+
+        # 2. Focus greeter and submit credentials
+        xdotool key Escape
+        sleep 0.5
+        xdotool type --delay 100 "{{ target_user }}"
+        sleep 0.5
+        xdotool key Return
+        sleep 1
+        xdotool type --delay 100 "{{ target_pass }}"
+        sleep 0.5
+        xdotool key Return
+        sleep 4
+      args:
+        executable: /bin/bash
+
+    - name: Verify opoadmin graphical session
+      ansible.builtin.shell: |
+        loginctl list-sessions --no-legend | grep -w "{{ target_user }}"
+      register: session_check
+      changed_when: false
+      failed_when: session_check.stdout == ""
+
+    - name: Show active session confirmation
       ansible.builtin.debug:
-        var: listening_port.stdout_lines
+        var: session_check.stdout_lines
