@@ -1,0 +1,12 @@
+---
+- name: Export AWX Inventory Hosts
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: Output Hostnames
+      ansible.builtin.debug:
+        msg: "HOST_ENTRY: {{ inventory_hostname }}"
+      run_once: true
+      loop: "{{ ansible_play_hosts }}"
+      loop_control:
+        loop_var: inventory_hostname
