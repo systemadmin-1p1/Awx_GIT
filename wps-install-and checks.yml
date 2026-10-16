@@ -1,63 +1,164 @@
 ---
-- name: Install WPS Office
-  hosts: all
-  become: yes
+- name: Download WPS Office installer on the AWX execution environment
+  hosts: localhost
+  connection: local
   gather_facts: false
+  become: false
+
+  vars:
+    wps_deb_url: "https://github.com/systemadmin-1p1/Awx_GIT/releases/download/wps-deb-11/wps-office_11.1.0.11733.XA_amd64.deb"
+    wps_controller_deb: "/tmp/wps-office_11.1.0.11733.XA_amd64.deb"
 
   tasks:
+    - name: Download WPS Office package
+      ansible.builtin.get_url:
+        url: "{{ wps_deb_url }}"
+        dest: "{{ wps_controller_deb }}"
+        mode: "0644"
 
-    - name: Check if WPS Office is already installed
-      ansible.builtin.shell:
-        cmd: dpkg-query -W -f='${Status}' wps-office 2>/dev/null
-      register: wps_check
+    - name: Verify downloaded package exists and is not empty
+      ansible.builtin.stat:
+        path: "{{ wps_controller_deb }}"
+      register: wps_controller_package
+
+    - name: Stop if WPS installer was not downloaded correctly
+      ansible.builtin.assert:
+        that:
+          - wps_controller_package.stat.exists
+          - wps_controller_package.stat.size | int > 0
+        fail_msg: "WPS installer is missing or empty on the AWX execution environment."
+
+- name: Install and verify WPS Office on desktops
+  hosts: "all:!localhost"
+  gather_facts: false
+  become: false
+  serial: 5
+
+  vars:
+    wps_controller_deb: "/tmp/wps-office_11.1.0.11733.XA_amd64.deb"
+    wps_target_deb: "/tmp/wps-office_11.1.0.11733.XA_amd64.deb"
+    wps_installed_status: "install ok installed"
+
+  pre_tasks:
+    - name: Check SSH and Python connectivity
+      ansible.builtin.ping:
+      changed_when: false
+
+    - name: Check current WPS package status without sudo
+      ansible.builtin.command:
+        argv:
+          - dpkg-query
+          - -W
+          - "-f=${Status}"
+          - wps-office
+      register: wps_initial_check
       changed_when: false
       failed_when: false
 
-    - name: Show WPS installation status
+    - name: Show initial WPS package status
       ansible.builtin.debug:
         msg: >-
-          {{ inventory_hostname }}:
-          {% if wps_check.stdout == 'install ok installed' %}
-          WPS Office is already installed. Skipping installation.
-          {% else %}
-          WPS Office is not installed. Starting installation.
-          {% endif %}
+          {{ inventory_hostname }}: {{ 'WPS Office is already installed.'
+          if (wps_initial_check.stdout | trim) == wps_installed_status
+          else 'WPS Office is not fully installed; installation will be attempted.' }}
 
-    - name: Download WPS deb on AWX runner
-      ansible.builtin.get_url:
-        url: "https://github.com/systemadmin-1p1/Awx_GIT/releases/download/wps-deb-11/wps-office_11.1.0.11733.XA_amd64.deb"
-        dest: /tmp/wps-office.deb
-      delegate_to: localhost
-      run_once: true
-      become: no
-      when: wps_check.stdout != 'install ok installed'
+  tasks:
+    - name: Install WPS Office and verify the final package state
+      when: (wps_initial_check.stdout | trim) != wps_installed_status
+      block:
+        - name: Copy WPS installer to the desktop
+          ansible.builtin.copy:
+            src: "{{ wps_controller_deb }}"
+            dest: "{{ wps_target_deb }}"
+            mode: "0644"
 
-    - name: Transfer deb to target machine
-      ansible.builtin.copy:
-        src: /tmp/wps-office.deb
-        dest: /tmp/wps-office.deb
-        mode: '0644'
-      when: wps_check.stdout != 'install ok installed'
+        - name: Unpack WPS package
+          ansible.builtin.command:
+            argv:
+              - dpkg
+              - --unpack
+              - "{{ wps_target_deb }}"
+          become: true
 
-    - name: Unpack deb package
+        - name: Comment out only active chgrp lines in the WPS post-install script
+          ansible.builtin.replace:
+            path: /var/lib/dpkg/info/wps-office.postinst
+            regexp: '^(?!\s*#)(.*chgrp.*)$'
+            replace: '# \1'
+          become: true
+
+        - name: Configure WPS package
+          ansible.builtin.command:
+            argv:
+              - dpkg
+              - --configure
+              - wps-office
+          environment:
+            DEBIAN_FRONTEND: noninteractive
+          become: true
+
+        - name: Verify WPS is fully installed
+          ansible.builtin.command:
+            argv:
+              - dpkg-query
+              - -W
+              - "-f=${Status}"
+              - wps-office
+          register: wps_install_check
+          changed_when: false
+          failed_when: (wps_install_check.stdout | trim) != wps_installed_status
+
+      rescue:
+        - name: Recheck package state after an installation task reports an error
+          ansible.builtin.command:
+            argv:
+              - dpkg-query
+              - -W
+              - "-f=${Status}"
+              - wps-office
+          register: wps_recovery_check
+          changed_when: false
+          failed_when: false
+
+        - name: Report recovered installation when WPS is actually installed
+          ansible.builtin.debug:
+            msg: >-
+              {{ inventory_hostname }}: WPS package verification succeeded despite an earlier task error.
+              Failed task: {{ ansible_failed_task.name | default('unknown task') }}.
+              The host will be treated as successful because dpkg reports '{{ wps_recovery_check.stdout | trim }}'.
+              Original error: {{ ansible_failed_result.msg | default(ansible_failed_result.stderr | default(ansible_failed_result.stdout | default('No additional error details'))) }}
+          when: (wps_recovery_check.stdout | trim) == wps_installed_status
+
+        - name: Mark host failed only if WPS is not fully installed
+          ansible.builtin.fail:
+            msg: >-
+              {{ inventory_hostname }}: WPS Office is NOT fully installed.
+              Failed task: {{ ansible_failed_task.name | default('unknown task') }}.
+              Package status: '{{ wps_recovery_check.stdout | trim }}'.
+              Error: {{ ansible_failed_result.msg | default(ansible_failed_result.stderr | default(ansible_failed_result.stdout | default('No additional error details'))) }}
+          when: (wps_recovery_check.stdout | trim) != wps_installed_status
+
+      always:
+        - name: Remove the temporary installer without requiring sudo
+          ansible.builtin.file:
+            path: "{{ wps_target_deb }}"
+            state: absent
+          failed_when: false
+
+    - name: Check final WPS package status
       ansible.builtin.command:
-        cmd: dpkg --unpack /tmp/wps-office.deb
-      when: wps_check.stdout != 'install ok installed'
+        argv:
+          - dpkg-query
+          - -W
+          - "-f=${Status}"
+          - wps-office
+      register: wps_final_check
+      changed_when: false
+      failed_when: false
 
-    - name: Comment out buggy chgrp command in postinst script
-      ansible.builtin.replace:
-        path: /var/lib/dpkg/info/wps-office.postinst
-        regexp: '^(.*chgrp.*)$'
-        replace: '# \1'
-      when: wps_check.stdout != 'install ok installed'
-
-    - name: Complete package configuration
-      ansible.builtin.command:
-        cmd: dpkg --configure wps-office
-      when: wps_check.stdout != 'install ok installed'
-
-    - name: Clean up installer deb
-      ansible.builtin.file:
-        path: /tmp/wps-office.deb
-        state: absent
-      when: wps_check.stdout != 'install ok installed'
+    - name: Display final WPS result clearly
+      ansible.builtin.debug:
+        msg: >-
+          {{ inventory_hostname }}: {{ 'SUCCESS - WPS Office is installed and verified.'
+          if (wps_final_check.stdout | trim) == wps_installed_status
+          else 'FAILED - WPS Office is not fully installed. Review the task error and sudo permissions.' }}
