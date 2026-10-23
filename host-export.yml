@@ -1,12 +1,30 @@
 ---
-- name: Export AWX Inventory Hosts
+- name: Export Ubuntu Netplan Configuration
   hosts: all
+  become: true
   gather_facts: false
+
   tasks:
-    - name: Output Hostnames
+    - name: Display Netplan Configuration
+      ansible.builtin.shell: |
+        if [ -d /etc/netplan ]; then
+          for file in /etc/netplan/*.yaml /etc/netplan/*.yml; do
+            if [ -f "$file" ]; then
+              echo "===== $file ====="
+              cat "$file"
+              echo ""
+            fi
+          done
+        else
+          echo "Netplan directory not found"
+        fi
+      args:
+        executable: /bin/bash
+      register: netplan_output
+      changed_when: false
+
+    - name: Show Netplan Configuration Output
       ansible.builtin.debug:
-        msg: "HOST_ENTRY: {{ inventory_hostname }}"
-      run_once: true
-      loop: "{{ ansible_play_hosts }}"
-      loop_control:
-        loop_var: inventory_hostname
+        msg: |
+          HOST: {{ inventory_hostname }}
+          {{ netplan_output.stdout }}
