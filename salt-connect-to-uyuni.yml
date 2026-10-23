@@ -1,0 +1,9 @@
+master: uyuni.1point1.in
+
+grains:
+  susemanager:
+    activation_key: "1-333f40a929544534b88f430ac55db6c4"
+
+server_id_use_crc: adler32
+enable_legacy_startup_events: false
+enable_fqdns_grains: false
