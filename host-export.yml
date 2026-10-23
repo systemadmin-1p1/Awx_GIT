@@ -1,30 +1,69 @@
+
 ---
-- name: Export Ubuntu Netplan Configuration
+- name: Collect Ubuntu Netplan Configurations
   hosts: all
   become: true
   gather_facts: false
 
   tasks:
-    - name: Display Netplan Configuration
+    - name: Read Netplan configuration files
       ansible.builtin.shell: |
-        if [ -d /etc/netplan ]; then
-          for file in /etc/netplan/*.yaml /etc/netplan/*.yml; do
-            if [ -f "$file" ]; then
-              echo "===== $file ====="
-              cat "$file"
+        found=0
+        for file in /etc/netplan/*.yaml /etc/netplan/*.yml; do
+          if [ -f "$file" ]; then
+            if [ "$found" -gt 0 ]; then
               echo ""
             fi
-          done
-        else
-          echo "Netplan directory not found"
+            echo "--- $file ---"
+            cat "$file"
+            found=$((found + 1))
+          fi
+        done
+        if [ "$found" -eq 0 ]; then
+          echo "No Netplan YAML files found"
         fi
       args:
         executable: /bin/bash
-      register: netplan_output
+      register: netplan_result
       changed_when: false
+      failed_when: false
 
-    - name: Show Netplan Configuration Output
+    - name: Collect host network information
+      ansible.builtin.set_fact:
+        netplan_report:
+          hostname: "{{ inventory_hostname }}"
+          ip_address: "{{ ansible_host | default(inventory_hostname) }}"
+          config: "{{ netplan_result.stdout | default('Unable to read configuration', true) | trim }}"
+
+    - name: Build consolidated report
+      ansible.builtin.set_fact:
+        all_netplan_reports: >-
+          {{
+            ansible_play_hosts_all
+            | map('extract', hostvars, 'netplan_report')
+            | list
+          }}
+      run_once: true
+      delegate_to: localhost
+      delegate_facts: true
+
+    - name: Display consolidated Netplan table
       ansible.builtin.debug:
         msg: |
-          HOST: {{ inventory_hostname }}
-          {{ netplan_output.stdout }}
+          ====================================================================================================
+                                   UBUNTU NETPLAN CONFIGURATION REPORT
+          ====================================================================================================
+          Total inventory hosts: {{ hostvars['localhost'].all_netplan_reports | length }}
+
+          {% for host in hostvars['localhost'].all_netplan_reports %}
+          ----------------------------------------------------------------------------------------------------
+          Hostname: {{ host.hostname }}
+          IP / Inventory Address: {{ host.ip_address }}
+          ----------------------------------------------------------------------------------------------------
+          Netplan Configuration:
+          {{ host.config }}
+          
+          {% endfor %}
+          ====================================================================================================
+      run_once: true
+      delegate_to: localhost
