@@ -1,3 +1,20 @@
+# 1. Download the repository trust key safely
+sudo mkdir -p /etc/apt/keyrings
+curl -fsSL https://download.opensuse.org/repositories/systemsmanagement:/Uyuni:/Master:/Ubuntu2404-Uyuni-Client-Tools/xUbuntu_24.04/Release.key | sudo gpg --dearmor -o /etc/apt/keyrings/uyuni-client-tools.gpg
+
+# 2. Map out the sources file (signed by the key above)
+echo 'deb [signed-by=/etc/apt/keyrings/uyuni-client-tools.gpg] http://download.opensuse.org/repositories/systemsmanagement:/Uyuni:/Master:/Ubuntu2404-Uyuni-Client-Tools/xUbuntu_24.04/ /' | sudo tee /etc/apt/sources.list.d/uyuni-client-tools.list
+
+
+
+sudo apt-get update
+
+sudo apt-get install -y venv-salt-minion
+
+sudo mkdir -p /etc/venv-salt-minion/minion.d/
+sudo nano /etc/venv-salt-minion/minion.d/uyuni.conf
+
+YAML
 master: uyuni.1point1.in
 
 grains:
@@ -5,5 +22,5 @@ grains:
     activation_key: "1-333f40a929544534b88f430ac55db6c4"
 
 server_id_use_crc: adler32
-enable_legacy_startup_events: false
-enable_fqdns_grains: false
+enable_legacy_startup_events: False
+enable_fqdns_grains: False
