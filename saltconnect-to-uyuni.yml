@@ -1,60 +1,55 @@
 ---
-- name: Install and Configure Uyuni Client
+- name: Offline Install and Configure Uyuni Client
   hosts: all
   become: true
   gather_facts: false
 
+  vars:
+    # Staging path inside the AWX execution environment
+    awx_offline_pkg_dir: "/tmp/uyuni_offline_pkgs"
+    # Destination directory on target systems
+    target_staging_dir: "/tmp/uyuni_offline"
+
   tasks:
-    - name: Ensure /etc/apt/keyrings directory exists on targets
+    # -------------------------------------------------------------
+    # 1. Prepare Target Staging Directory
+    # -------------------------------------------------------------
+    - name: Create temporary staging directory on target hosts
       ansible.builtin.file:
-        path: /etc/apt/keyrings
+        path: "{{ target_staging_dir }}"
         state: directory
         mode: '0755'
 
-    # Download and prepare key on the Ansible controller
-    - name: Download Uyuni repository Release key on control node
-      ansible.builtin.get_url:
-        url: "https://download.opensuse.org/repositories/systemsmanagement:/Uyuni:/Master:/Ubuntu2404-Uyuni-Client-Tools/xUbuntu_24.04/Release.key"
-        dest: /tmp/uyuni-release.key
-        mode: '0644'
-      delegate_to: localhost
-      run_once: true
-      become: false
-
-    - name: Dearmor GPG key on control node
-      ansible.builtin.command:
-        cmd: gpg --dearmor --yes -o /tmp/uyuni-client-tools.gpg /tmp/uyuni-release.key
-      delegate_to: localhost
-      run_once: true
-      become: false
-
-    # Push the ready key to target machines
-    - name: Copy dearmored GPG key to target hosts
+    # -------------------------------------------------------------
+    # 2. Push Offline Deb Packages from AWX to Targets
+    # -------------------------------------------------------------
+    - name: Copy offline .deb packages from AWX /tmp to target hosts
       ansible.builtin.copy:
-        src: /tmp/uyuni-client-tools.gpg
-        dest: /etc/apt/keyrings/uyuni-client-tools.gpg
+        src: "{{ awx_offline_pkg_dir }}/"
+        dest: "{{ target_staging_dir }}/"
         mode: '0644'
 
-    - name: Add Uyuni client tools APT repository source
-      ansible.builtin.copy:
-        dest: /etc/apt/sources.list.d/uyuni-client-tools.list
-        content: |
-          deb [signed-by=/etc/apt/keyrings/uyuni-client-tools.gpg] http://download.opensuse.org/repositories/systemsmanagement:/Uyuni:/Master:/Ubuntu2404-Uyuni-Client-Tools/xUbuntu_24.04/ /
-        mode: '0644'
+    # -------------------------------------------------------------
+    # 3. Offline Package Installation via dpkg
+    # -------------------------------------------------------------
+    - name: Install venv-salt-minion packages offline
+      ansible.builtin.shell: |
+        dpkg -i {{ target_staging_dir }}/*.deb
+      args:
+        executable: /bin/bash
+      register: dpkg_install
+      changed_when: "'Setting up venv-salt-minion' in dpkg_install.stdout"
 
-    - name: Update apt cache and install venv-salt-minion
-      ansible.builtin.apt:
-        name: venv-salt-minion
-        state: present
-        update_cache: true
-
+    # -------------------------------------------------------------
+    # 4. Configure Uyuni Minion
+    # -------------------------------------------------------------
     - name: Ensure /etc/venv-salt-minion/minion.d directory exists
       ansible.builtin.file:
         path: /etc/venv-salt-minion/minion.d
         state: directory
         mode: '0755'
 
-    - name: Configure Uyuni minion settings
+    - name: Deploy Uyuni minion configuration
       ansible.builtin.copy:
         dest: /etc/venv-salt-minion/minion.d/uyuni.conf
         content: |
@@ -68,8 +63,16 @@
               activation_key: "1-333f40a929544534b88f430ac55db6c4"
         mode: '0640'
 
+    # -------------------------------------------------------------
+    # 5. Service Activation & Cleanup
+    # -------------------------------------------------------------
     - name: Enable and start venv-salt-minion service
       ansible.builtin.systemd:
         name: venv-salt-minion
         state: started
         enabled: true
+
+    - name: Clean up temporary .deb staging files on target
+      ansible.builtin.file:
+        path: "{{ target_staging_dir }}"
+        state: absent
