@@ -1,26 +1,26 @@
-- name: Export Ubuntu Netplan Configuration
-  hosts: all
-  become: true
-  gather_facts: false
+# 1. Download the repository trust key safely
+sudo mkdir -p /etc/apt/keyrings
+curl -fsSL https://download.opensuse.org/repositories/systemsmanagement:/Uyuni:/Master:/Ubuntu2404-Uyuni-Client-Tools/xUbuntu_24.04/Release.key | sudo gpg --dearmor -o /etc/apt/keyrings/uyuni-client-tools.gpg
 
-  tasks:
-    - name: Extract Netplan IP and CIDR
-      ansible.builtin.shell: |
-        awk '
-          /addresses:/ { flag=1 }
-          /^[[:space:]]*[a-zA-Z0-9_]+:/ && !/addresses:/ { flag=0 }
-          flag { print }
-        ' /etc/netplan/*.yaml /etc/netplan/*.yml 2>/dev/null \
-        | grep -oE '(([0-9]{1,3}\.){3}[0-9]{1,3}|[a-fA-F0-9:]+)/[0-9]{1,3}' \
-        | sort -u || true
-      args:
-        executable: /bin/bash
-      register: netplan_ips
-      changed_when: false
+# 2. Map out the sources file (signed by the key above)
+echo 'deb [signed-by=/etc/apt/keyrings/uyuni-client-tools.gpg] http://download.opensuse.org/repositories/systemsmanagement:/Uyuni:/Master:/Ubuntu2404-Uyuni-Client-Tools/xUbuntu_24.04/ /' | sudo tee /etc/apt/sources.list.d/uyuni-client-tools.list
 
-    - name: Show Netplan IP and CIDR Output
-      ansible.builtin.debug:
-        msg: |
-          HOST: {{ inventory_hostname }}
-          IP/CIDR:
-          {{ netplan_ips.stdout if netplan_ips.stdout != '' else 'No static IP/CIDR found (e.g., DHCP active or Netplan missing)' }}
+
+
+sudo apt-get update
+
+sudo apt-get install -y venv-salt-minion
+
+sudo mkdir -p /etc/venv-salt-minion/minion.d/
+sudo nano /etc/venv-salt-minion/minion.d/uyuni.conf
+
+YAML
+master: uyuni.1point1.in
+
+grains:
+  susemanager:
+    activation_key: "1-333f40a929544534b88f430ac55db6c4"
+
+server_id_use_crc: adler32
+enable_legacy_startup_events: False
+enable_fqdns_grains: False
