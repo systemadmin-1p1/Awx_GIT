@@ -5,28 +5,35 @@
   gather_facts: false
 
   tasks:
-    - name: Ensure /etc/apt/keyrings directory exists
+    - name: Ensure /etc/apt/keyrings directory exists on targets
       ansible.builtin.file:
         path: /etc/apt/keyrings
         state: directory
         mode: '0755'
 
-    - name: Download Uyuni repository Release key
+    # Download and prepare key on the Ansible controller
+    - name: Download Uyuni repository Release key on control node
       ansible.builtin.get_url:
         url: "https://download.opensuse.org/repositories/systemsmanagement:/Uyuni:/Master:/Ubuntu2404-Uyuni-Client-Tools/xUbuntu_24.04/Release.key"
         dest: /tmp/uyuni-release.key
         mode: '0644'
+      delegate_to: localhost
+      run_once: true
+      become: false
 
-    - name: Dearmor GPG key into /etc/apt/keyrings/uyuni-client-tools.gpg
+    - name: Dearmor GPG key on control node
       ansible.builtin.command:
-        cmd: gpg --dearmor --yes -o /etc/apt/keyrings/uyuni-client-tools.gpg /tmp/uyuni-release.key
-      args:
-        creates: /etc/apt/keyrings/uyuni-client-tools.gpg
+        cmd: gpg --dearmor --yes -o /tmp/uyuni-client-tools.gpg /tmp/uyuni-release.key
+      delegate_to: localhost
+      run_once: true
+      become: false
 
-    - name: Clean up temporary raw GPG key
-      ansible.builtin.file:
-        path: /tmp/uyuni-release.key
-        state: absent
+    # Push the ready key to target machines
+    - name: Copy dearmored GPG key to target hosts
+      ansible.builtin.copy:
+        src: /tmp/uyuni-client-tools.gpg
+        dest: /etc/apt/keyrings/uyuni-client-tools.gpg
+        mode: '0644'
 
     - name: Add Uyuni client tools APT repository source
       ansible.builtin.copy:
