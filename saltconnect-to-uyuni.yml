@@ -1,26 +1,68 @@
-# 1. Download the repository trust key safely
-sudo mkdir -p /etc/apt/keyrings
-curl -fsSL https://download.opensuse.org/repositories/systemsmanagement:/Uyuni:/Master:/Ubuntu2404-Uyuni-Client-Tools/xUbuntu_24.04/Release.key | sudo gpg --dearmor -o /etc/apt/keyrings/uyuni-client-tools.gpg
+---
+- name: Install and Configure Uyuni Client
+  hosts: all
+  become: true
+  gather_facts: false
 
-# 2. Map out the sources file (signed by the key above)
-echo 'deb [signed-by=/etc/apt/keyrings/uyuni-client-tools.gpg] http://download.opensuse.org/repositories/systemsmanagement:/Uyuni:/Master:/Ubuntu2404-Uyuni-Client-Tools/xUbuntu_24.04/ /' | sudo tee /etc/apt/sources.list.d/uyuni-client-tools.list
+  tasks:
+    - name: Ensure /etc/apt/keyrings directory exists
+      ansible.builtin.file:
+        path: /etc/apt/keyrings
+        state: directory
+        mode: '0755'
 
+    - name: Download Uyuni repository Release key
+      ansible.builtin.get_url:
+        url: "https://download.opensuse.org/repositories/systemsmanagement:/Uyuni:/Master:/Ubuntu2404-Uyuni-Client-Tools/xUbuntu_24.04/Release.key"
+        dest: /tmp/uyuni-release.key
+        mode: '0644'
 
+    - name: Dearmor GPG key into /etc/apt/keyrings/uyuni-client-tools.gpg
+      ansible.builtin.command:
+        cmd: gpg --dearmor --yes -o /etc/apt/keyrings/uyuni-client-tools.gpg /tmp/uyuni-release.key
+      args:
+        creates: /etc/apt/keyrings/uyuni-client-tools.gpg
 
-sudo apt-get update
+    - name: Clean up temporary raw GPG key
+      ansible.builtin.file:
+        path: /tmp/uyuni-release.key
+        state: absent
 
-sudo apt-get install -y venv-salt-minion
+    - name: Add Uyuni client tools APT repository source
+      ansible.builtin.copy:
+        dest: /etc/apt/sources.list.d/uyuni-client-tools.list
+        content: |
+          deb [signed-by=/etc/apt/keyrings/uyuni-client-tools.gpg] http://download.opensuse.org/repositories/systemsmanagement:/Uyuni:/Master:/Ubuntu2404-Uyuni-Client-Tools/xUbuntu_24.04/ /
+        mode: '0644'
 
-sudo mkdir -p /etc/venv-salt-minion/minion.d/
-sudo nano /etc/venv-salt-minion/minion.d/uyuni.conf
+    - name: Update apt cache and install venv-salt-minion
+      ansible.builtin.apt:
+        name: venv-salt-minion
+        state: present
+        update_cache: true
 
-YAML
-master: uyuni.1point1.in
+    - name: Ensure /etc/venv-salt-minion/minion.d directory exists
+      ansible.builtin.file:
+        path: /etc/venv-salt-minion/minion.d
+        state: directory
+        mode: '0755'
 
-grains:
-  susemanager:
-    activation_key: "1-333f40a929544534b88f430ac55db6c4"
+    - name: Configure Uyuni minion settings
+      ansible.builtin.copy:
+        dest: /etc/venv-salt-minion/minion.d/uyuni.conf
+        content: |
+          master: uyuni.1point1.in
+          server_id_use_crc: adler32
+          enable_legacy_startup_events: False
+          enable_fqdns_grains: False
 
-server_id_use_crc: adler32
-enable_legacy_startup_events: False
-enable_fqdns_grains: False
+          grains:
+            susemanager:
+              activation_key: "1-333f40a929544534b88f430ac55db6c4"
+        mode: '0640'
+
+    - name: Enable and start venv-salt-minion service
+      ansible.builtin.systemd:
+        name: venv-salt-minion
+        state: started
+        enabled: true
