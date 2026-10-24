@@ -5,33 +5,21 @@
   gather_facts: false
 
   vars:
-    # Staging path inside the AWX execution environment
-    awx_offline_pkg_dir: "/tmp/uyuni_offline_pkgs"
-    # Destination directory on target systems
     target_staging_dir: "/tmp/uyuni_offline"
 
   tasks:
-    # -------------------------------------------------------------
-    # 1. Prepare Target Staging Directory
-    # -------------------------------------------------------------
     - name: Create temporary staging directory on target hosts
       ansible.builtin.file:
         path: "{{ target_staging_dir }}"
         state: directory
         mode: '0755'
 
-    # -------------------------------------------------------------
-    # 2. Push Offline Deb Packages from AWX to Targets
-    # -------------------------------------------------------------
-    - name: Copy offline .deb packages from AWX /tmp to target hosts
+    - name: Copy offline .deb packages from project to target hosts
       ansible.builtin.copy:
-        src: "{{ awx_offline_pkg_dir }}/"
+        src: "{{ playbook_dir }}/files/"
         dest: "{{ target_staging_dir }}/"
         mode: '0644'
 
-    # -------------------------------------------------------------
-    # 3. Offline Package Installation via dpkg
-    # -------------------------------------------------------------
     - name: Install venv-salt-minion packages offline
       ansible.builtin.shell: |
         dpkg -i {{ target_staging_dir }}/*.deb
@@ -40,9 +28,6 @@
       register: dpkg_install
       changed_when: "'Setting up venv-salt-minion' in dpkg_install.stdout"
 
-    # -------------------------------------------------------------
-    # 4. Configure Uyuni Minion
-    # -------------------------------------------------------------
     - name: Ensure /etc/venv-salt-minion/minion.d directory exists
       ansible.builtin.file:
         path: /etc/venv-salt-minion/minion.d
@@ -63,9 +48,6 @@
               activation_key: "1-333f40a929544534b88f430ac55db6c4"
         mode: '0640'
 
-    # -------------------------------------------------------------
-    # 5. Service Activation & Cleanup
-    # -------------------------------------------------------------
     - name: Enable and start venv-salt-minion service
       ansible.builtin.systemd:
         name: venv-salt-minion
