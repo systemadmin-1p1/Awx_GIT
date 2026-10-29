@@ -1,0 +1,32 @@
+---
+- name: Audit system IP and CIDR
+  hosts: all
+  gather_facts: false
+  become: yes
+
+  tasks:
+    - name: 1. Check active system IP and CIDR (excluding loopback)
+      ansible.builtin.shell: ip -o -4 addr show | grep -v 'lo' | awk '{print $4}'
+      register: active_ip
+      changed_when: false
+
+    - name: Print the active IP and CIDR
+      ansible.builtin.debug:
+        msg: "System is actively using: {{ active_ip.stdout_lines }}"
+
+    - name: 2. Find the active Netplan YAML file
+      ansible.builtin.find:
+        paths: /etc/netplan/
+        patterns: "*.yaml"
+      register: netplan_files
+
+    - name: Read the Netplan configuration file
+      ansible.builtin.slurp:
+        src: "{{ netplan_files.files[0].path }}"
+      register: netplan_raw
+      when: netplan_files.matched > 0
+
+    - name: Print the IP and CIDR parsed purely from the Netplan YAML
+      ansible.builtin.debug:
+        msg: "Netplan file configured with: {{ (netplan_raw.content | b64decode | from_yaml).network.ethernets.values() | map(attribute='addresses') | flatten }}"
+      when: netplan_files.matched > 0
