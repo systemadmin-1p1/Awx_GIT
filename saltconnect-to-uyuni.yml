@@ -1,178 +1,288 @@
 
 ---
 # ============================================================
-# PLAY 1: DOWNLOAD UYUNI REPOSITORY KEY ON AWX
+# PLAY 1: DOWNLOAD UYUNI PACKAGE ON AWX
+# AWX HAS INTERNET ACCESS
 # ============================================================
 
-- name: Download Uyuni repository key on AWX
+- name: Download Uyuni Salt Minion package on AWX
   hosts: localhost
   connection: local
   gather_facts: false
   become: false
 
   vars:
-    awx_stage_dir: "/tmp/uyuni-client-tools"
+    awx_stage_dir: "/tmp/uyuni_offline"
+
     uyuni_repo_url: "https://download.opensuse.org/repositories/systemsmanagement:/Uyuni:/Master:/Ubuntu2404-Uyuni-Client-Tools/xUbuntu_24.04"
 
-    awx_release_key: "/tmp/uyuni-client-tools/Release.key"
+    awx_packages_index: "/tmp/uyuni_offline/Packages.gz"
+    awx_venv_deb: "/tmp/uyuni_offline/venv-salt-minion.deb"
 
   tasks:
 
-    - name: Create temporary directory on AWX
+    - name: Create temporary package directory on AWX
       ansible.builtin.file:
         path: "{{ awx_stage_dir }}"
         state: directory
         mode: "0755"
 
-    - name: Download Uyuni repository Release.key
+    - name: Download Uyuni repository package index
       ansible.builtin.get_url:
-        url: "{{ uyuni_repo_url }}/Release.key"
-        dest: "{{ awx_release_key }}"
+        url: "{{ uyuni_repo_url }}/Packages.gz"
+        dest: "{{ awx_packages_index }}"
         mode: "0644"
+        force: true
         validate_certs: true
 
-    - name: Verify downloaded repository key
-      ansible.builtin.stat:
-        path: "{{ awx_release_key }}"
-      register: awx_key_check
+    - name: Find current AMD64 venv-salt-minion package metadata
+      ansible.builtin.command:
+        argv:
+          - python3
+          - -c
+          - |
+            import gzip
+            import json
+            import re
+            import sys
 
-    - name: Validate downloaded repository key
+            with gzip.open(sys.argv[1], "rt", encoding="utf-8") as source:
+                content = source.read()
+
+            for block in content.split("\n\n"):
+                fields = {}
+
+                for line in block.splitlines():
+                    if line.startswith((" ", "\t")):
+                        continue
+
+                    if ": " in line:
+                        key, value = line.split(": ", 1)
+                        fields[key] = value.strip()
+
+                if (
+                    fields.get("Package") == "venv-salt-minion"
+                    and fields.get("Architecture") == "amd64"
+                ):
+                    filename = fields.get("Filename", "")
+                    checksum = fields.get("SHA256", "")
+
+                    if (
+                        not filename
+                        or filename.startswith("/")
+                        or ".." in filename.split("/")
+                        or not re.fullmatch(r"[a-fA-F0-9]{64}", checksum)
+                    ):
+                        raise SystemExit("Invalid package metadata")
+
+                    print(json.dumps({
+                        "filename": filename,
+                        "sha256": checksum,
+                        "version": fields.get("Version", ""),
+                        "architecture": fields.get("Architecture", ""),
+                        "depends": fields.get("Depends", ""),
+                        "size": fields.get("Size", "")
+                    }))
+
+                    sys.exit(0)
+
+            raise SystemExit("venv-salt-minion AMD64 package not found")
+          - "{{ awx_packages_index }}"
+      register: package_metadata
+      changed_when: false
+
+    - name: Store package metadata on AWX
+      ansible.builtin.set_fact:
+        uyuni_package_record: "{{ package_metadata.stdout | from_json }}"
+
+    - name: Validate package metadata
       ansible.builtin.assert:
         that:
-          - awx_key_check.stat.exists
-          - awx_key_check.stat.isreg
-          - awx_key_check.stat.size | int > 0
-        fail_msg: "Uyuni repository key is missing or empty."
+          - uyuni_package_record.architecture == "amd64"
+          - uyuni_package_record.filename | length > 0
+          - uyuni_package_record.sha256 | length == 64
+          - uyuni_package_record.version | length > 0
+        fail_msg: "Invalid venv-salt-minion package metadata."
 
-    - name: Show AWX preparation result
+    - name: Display selected package version
       ansible.builtin.debug:
-        msg: "Uyuni repository key downloaded successfully on AWX."
+        msg:
+          - "Package: venv-salt-minion"
+          - "Version: {{ uyuni_package_record.version }}"
+          - "Architecture: {{ uyuni_package_record.architecture }}"
+          - "Size: {{ uyuni_package_record.size }} bytes"
+
+    - name: Download venv-salt-minion DEB package on AWX
+      ansible.builtin.get_url:
+        url: "{{ uyuni_repo_url }}/{{ uyuni_package_record.filename | regex_replace('^\\./', '') }}"
+        dest: "{{ awx_venv_deb }}"
+        mode: "0644"
+        force: true
+        validate_certs: true
+        checksum: "sha256:{{ uyuni_package_record.sha256 }}"
+
+    - name: Verify downloaded DEB package
+      ansible.builtin.stat:
+        path: "{{ awx_venv_deb }}"
+        checksum_algorithm: sha256
+      register: awx_deb_check
+
+    - name: Validate downloaded package checksum
+      ansible.builtin.assert:
+        that:
+          - awx_deb_check.stat.exists
+          - awx_deb_check.stat.isreg
+          - awx_deb_check.stat.checksum == uyuni_package_record.sha256
+        fail_msg: "Downloaded DEB package checksum verification failed."
+
+    - name: Store AWX package information for target play
+      ansible.builtin.set_fact:
+        uyuni_awx_deb_path: "{{ awx_venv_deb }}"
+        uyuni_awx_deb_sha256: "{{ uyuni_package_record.sha256 }}"
+        uyuni_awx_deb_version: "{{ uyuni_package_record.version }}"
+
+    - name: Display AWX download result
+      ansible.builtin.debug:
+        msg: "Uyuni Salt Minion downloaded and checksum verified on AWX."
 
 
 # ============================================================
-# PLAY 2: INSTALL AND CONFIGURE UYUNI CLIENT ON TARGETS
+# PLAY 2: TRANSFER AND INSTALL OFFLINE ON CLIENTS
+# CLIENTS DO NOT NEED INTERNET ACCESS
 # ============================================================
 
-- name: Install and configure Uyuni Salt Minion
+- name: Install and configure Uyuni Salt Minion on clients
   hosts: "all:!localhost"
   gather_facts: true
-  become: true
+  become: false
   serial: 5
 
   vars:
+    target_staging_dir: "/root/uyuni_offline"
 
-    # AWX source
-    awx_release_key: "/tmp/uyuni-client-tools/Release.key"
+    target_deb: "/root/uyuni_offline/venv-salt-minion.deb"
 
-    # Target configuration
-    target_keyring_dir: "/etc/apt/keyrings"
-    target_keyring_file: "/etc/apt/keyrings/uyuni-client-tools.asc"
-    target_repo_file: "/etc/apt/sources.list.d/uyuni-client-tools.list"
-
-    # Uyuni repository
-    uyuni_repo_url: "https://download.opensuse.org/repositories/systemsmanagement:/Uyuni:/Master:/Ubuntu2404-Uyuni-Client-Tools/xUbuntu_24.04"
-
-    # Uyuni server and activation key
     uyuni_master: "uyuni.1point1.in"
+
     uyuni_activation_key: "1-ubuntu-24.04-pool-amd64-uyuni"
 
   pre_tasks:
 
-    - name: Verify Ubuntu 24.04 AMD64 operating system
+    - name: Validate Ubuntu 24.04 AMD64 client
       ansible.builtin.assert:
         that:
           - ansible_facts['os_family'] == "Debian"
-          - ansible_facts['distribution_version'] == "24.04"
           - ansible_facts['architecture'] == "x86_64"
-        fail_msg: "This playbook supports Ubuntu 24.04 / Linux Lite 7.x AMD64 only."
+        fail_msg: "Only AMD64 Debian-family clients are supported."
 
-    - name: Verify AWX repository key exists
-      ansible.builtin.stat:
-        path: "{{ awx_release_key }}"
-      delegate_to: localhost
-      become: false
-      register: awx_key_check
+    - name: Verify Ubuntu Noble release
+      ansible.builtin.command:
+        argv:
+          - grep
+          - -Eq
+          - "^(VERSION_CODENAME|UBUNTU_CODENAME)=noble$"
+          - /etc/os-release
+      changed_when: false
+      failed_when: false
+      register: noble_check
 
-    - name: Validate AWX repository key
+    - name: Stop if client is not Ubuntu 24.04 based
       ansible.builtin.assert:
         that:
-          - awx_key_check.stat.exists
-          - awx_key_check.stat.size | int > 0
-        fail_msg: "Repository key is missing on AWX."
+          - noble_check.rc == 0
+        fail_msg: "Client is not based on Ubuntu 24.04 Noble."
 
-    - name: Verify Uyuni server hostname resolves
+    - name: Verify Uyuni package exists on AWX
+      ansible.builtin.stat:
+        path: "{{ hostvars['localhost']['uyuni_awx_deb_path'] }}"
+      delegate_to: localhost
+      become: false
+      register: controller_package
+
+    - name: Validate AWX package
+      ansible.builtin.assert:
+        that:
+          - controller_package.stat.exists
+          - controller_package.stat.size | int > 0
+        fail_msg: "Uyuni package is missing from AWX."
+
+    - name: Verify Uyuni master hostname resolves
       ansible.builtin.command:
         argv:
           - getent
           - hosts
           - "{{ uyuni_master }}"
-      register: uyuni_hostname_check
+      register: uyuni_dns_check
       changed_when: false
-      failed_when: uyuni_hostname_check.rc != 0
-
-    - name: Display Uyuni server hostname
-      ansible.builtin.debug:
-        msg: "Uyuni server resolved: {{ uyuni_hostname_check.stdout }}"
+      failed_when: uyuni_dns_check.rc != 0
 
   tasks:
 
-    - name: Create APT keyring directory
+    # --------------------------------------------------------
+    # TRANSFER PACKAGE
+    # --------------------------------------------------------
+
+    - name: Create package staging directory on client
       ansible.builtin.file:
-        path: "{{ target_keyring_dir }}"
+        path: "{{ target_staging_dir }}"
         state: directory
         owner: root
         group: root
-        mode: "0755"
+        mode: "0700"
+      become: true
 
-    - name: Transfer Uyuni repository key from AWX
+    - name: Transfer Uyuni DEB package from AWX to client
       ansible.builtin.copy:
-        src: "{{ awx_release_key }}"
-        dest: "{{ target_keyring_file }}"
+        src: "{{ hostvars['localhost']['uyuni_awx_deb_path'] }}"
+        dest: "{{ target_deb }}"
         owner: root
         group: root
         mode: "0644"
+      become: true
 
-    - name: Verify transferred repository key
+    - name: Verify transferred package on client
       ansible.builtin.stat:
-        path: "{{ target_keyring_file }}"
-      register: target_key_check
+        path: "{{ target_deb }}"
+        checksum_algorithm: sha256
+      register: target_deb_check
+      become: true
 
-    - name: Validate transferred repository key
+    - name: Validate transferred package checksum
       ansible.builtin.assert:
         that:
-          - target_key_check.stat.exists
-          - target_key_check.stat.size | int > 0
-        fail_msg: "Uyuni repository key transfer failed."
+          - target_deb_check.stat.exists
+          - target_deb_check.stat.checksum == hostvars['localhost']['uyuni_awx_deb_sha256']
+        fail_msg: "Package transfer or checksum verification failed."
 
-    - name: Configure Uyuni Ubuntu 24.04 repository
-      ansible.builtin.copy:
-        dest: "{{ target_repo_file }}"
-        content: |
-          deb [arch=amd64 signed-by={{ target_keyring_file }}] {{ uyuni_repo_url }}/ ./
-        owner: root
-        group: root
-        mode: "0644"
+    # --------------------------------------------------------
+    # OFFLINE INSTALLATION
+    # --------------------------------------------------------
 
-    - name: Update APT package indexes
-      ansible.builtin.apt:
-        update_cache: true
-        cache_valid_time: 0
-        lock_timeout: 300
+    - name: Install Uyuni Salt Minion using local DEB only
+      ansible.builtin.command:
+        argv:
+          - apt-get
+          - --yes
+          - --no-download
+          - --no-install-recommends
+          - install
+          - "{{ target_deb }}"
+      register: minion_install
+      changed_when: minion_install.rc == 0
+      become: true
 
-    - name: Install Uyuni Salt Minion
-      ansible.builtin.apt:
-        name: venv-salt-minion
-        state: present
-        update_cache: false
-        lock_timeout: 300
+    # --------------------------------------------------------
+    # UYUNI CONFIGURATION
+    # --------------------------------------------------------
 
-    - name: Create Uyuni minion configuration directory
+    - name: Create Uyuni configuration directory
       ansible.builtin.file:
         path: /etc/venv-salt-minion/minion.d
         state: directory
         owner: root
         group: root
         mode: "0755"
+      become: true
 
     - name: Configure Uyuni Salt Minion
       ansible.builtin.copy:
@@ -190,14 +300,25 @@
         group: root
         mode: "0640"
       no_log: true
+      register: minion_configuration
+      become: true
 
-    - name: Enable and restart Uyuni Salt Minion
+    # --------------------------------------------------------
+    # START SERVICE
+    # --------------------------------------------------------
+
+    - name: Enable and start Uyuni Salt Minion
       ansible.builtin.systemd:
         name: venv-salt-minion
         enabled: true
         state: restarted
+      become: true
 
-    - name: Verify Uyuni Salt Minion package
+    # --------------------------------------------------------
+    # VERIFICATION
+    # --------------------------------------------------------
+
+    - name: Verify package installation
       ansible.builtin.command:
         argv:
           - dpkg-query
@@ -207,8 +328,9 @@
       register: package_status
       changed_when: false
       failed_when: package_status.stdout | trim != "install ok installed"
+      become: true
 
-    - name: Verify Uyuni Salt Minion service
+    - name: Verify minion service
       ansible.builtin.command:
         argv:
           - systemctl
@@ -217,14 +339,30 @@
       register: service_status
       changed_when: false
       failed_when: service_status.stdout | trim != "active"
+      become: true
 
-    - name: Display final installation result
+    # --------------------------------------------------------
+    # CLEANUP
+    # --------------------------------------------------------
+
+    - name: Remove temporary DEB package after successful installation
+      ansible.builtin.file:
+        path: "{{ target_staging_dir }}"
+        state: absent
+      become: true
+
+    - name: Display final installation report
       ansible.builtin.debug:
         msg:
-          - "UYUNI CLIENT INSTALLATION SUCCESSFUL"
+          - "=========================================="
+          - "UYUNI OFFLINE INSTALLATION SUCCESS"
+          - "=========================================="
           - "Client: {{ inventory_hostname }}"
-          - "Operating System: {{ ansible_facts['distribution'] }} {{ ansible_facts['distribution_version'] }}"
-          - "Package: {{ package_status.stdout | trim }}"
-          - "Service: {{ service_status.stdout | trim }}"
-          - "Uyuni Master: {{ uyuni_master }}"
-          - "Activation Key: {{ uyuni_activation_key }}"
+          - "OS: {{ ansible_facts['distribution'] }}"
+          - "Package: venv-salt-minion"
+          - "Version: {{ hostvars['localhost']['uyuni_awx_deb_version'] }}"
+          - "Package status: {{ package_status.stdout | trim }}"
+          - "Service status: {{ service_status.stdout | trim }}"
+          - "Uyuni master: {{ uyuni_master }}"
+          - "Activation key: {{ uyuni_activation_key }}"
+          - "=========================================="
