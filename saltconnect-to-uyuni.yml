@@ -6,29 +6,14 @@
   gather_facts: false
 
   vars:
-    target_staging_dir: "/tmp/uyuni_offline"
+    controller_deb_dir: "{{ playbook_dir }}"
+    target_staging_dir: "/root/uyuni_offline"
 
   pre_tasks:
 
-    - name: Check offline package directory on AWX controller
-      ansible.builtin.stat:
-        path: "{{ playbook_dir }}/files"
-      delegate_to: localhost
-      become: false
-      register: offline_package_dir
-
-    - name: Validate offline package directory
-      ansible.builtin.assert:
-        that:
-          - offline_package_dir.stat.exists
-          - offline_package_dir.stat.isdir
-        fail_msg: >-
-          ERROR: The files directory is missing on the AWX controller.
-          Expected location: {{ playbook_dir }}/files/
-
-    - name: Find offline DEB packages on AWX controller
+    - name: Find DEB packages in AWX project root
       ansible.builtin.find:
-        paths: "{{ playbook_dir }}/files"
+        paths: "{{ controller_deb_dir }}"
         patterns: "*.deb"
         file_type: file
         recurse: false
@@ -36,60 +21,86 @@
       become: false
       register: offline_deb_files
 
-    - name: Validate offline DEB packages
+    - name: Verify that DEB packages exist
       ansible.builtin.assert:
         that:
           - offline_deb_files.matched | int > 0
         fail_msg: >-
-          ERROR: No .deb packages found in {{ playbook_dir }}/files/
+          No DEB packages were found in the AWX project root:
+          {{ controller_deb_dir }}
 
-    - name: Display package count
+    - name: Display number of packages found
       ansible.builtin.debug:
-        msg: "Found {{ offline_deb_files.matched }} offline DEB packages."
+        msg: "Found {{ offline_deb_files.matched }} DEB packages."
 
   tasks:
 
-    - name: Create temporary staging directory on target hosts
+    - name: Create package directory under target root
       ansible.builtin.file:
         path: "{{ target_staging_dir }}"
         state: directory
-        mode: '0755'
+        owner: root
+        group: root
+        mode: '0700'
 
-    - name: Copy offline DEB packages from AWX controller
+    - name: Transfer offline DEB packages to target root
       ansible.builtin.copy:
-        src: "{{ playbook_dir }}/files/"
-        dest: "{{ target_staging_dir }}/"
+        src: "{{ item.path }}"
+        dest: "{{ target_staging_dir }}/{{ item.path | basename }}"
+        owner: root
+        group: root
         mode: '0644'
-        directory_mode: '0755'
+      loop: "{{ offline_deb_files.files }}"
+      loop_control:
+        label: "{{ item.path | basename }}"
 
-    - name: Verify packages were transferred
+    - name: Verify transferred DEB packages
       ansible.builtin.find:
         paths: "{{ target_staging_dir }}"
         patterns: "*.deb"
         file_type: file
+        recurse: false
       register: transferred_packages
 
-    - name: Validate transferred packages
+    - name: Validate package transfer count
       ansible.builtin.assert:
         that:
           - transferred_packages.matched | int == offline_deb_files.matched | int
-        fail_msg: "DEB package transfer verification failed."
+        fail_msg: >-
+          Package transfer verification failed.
+          Expected {{ offline_deb_files.matched }} packages,
+          found {{ transferred_packages.matched }} packages.
 
-    - name: Install venv-salt-minion packages offline
+    - name: Display successful package transfer
+      ansible.builtin.debug:
+        msg: >-
+          Successfully transferred {{ transferred_packages.matched }}
+          DEB packages to {{ target_staging_dir }}.
+
+    - name: Install offline DEB packages
       ansible.builtin.shell: |
-        dpkg -i {{ target_staging_dir }}/*.deb
+        set -e
+        shopt -s nullglob
+        packages=( {{ target_staging_dir }}/*.deb )
+
+        if [ ${#packages[@]} -eq 0 ]; then
+          echo "ERROR: No DEB packages found."
+          exit 1
+        fi
+
+        dpkg -i "${packages[@]}"
       args:
         executable: /bin/bash
       register: dpkg_install
       changed_when: dpkg_install.rc == 0
 
-    - name: Ensure minion configuration directory exists
+    - name: Ensure Uyuni minion configuration directory exists
       ansible.builtin.file:
         path: /etc/venv-salt-minion/minion.d
         state: directory
         mode: '0755'
 
-    - name: Deploy Uyuni minion configuration
+    - name: Configure Uyuni Salt Minion
       ansible.builtin.copy:
         dest: /etc/venv-salt-minion/minion.d/uyuni.conf
         content: |
@@ -101,16 +112,31 @@
           grains:
             susemanager:
               activation_key: "{{ uyuni_activation_key }}"
+        owner: root
+        group: root
         mode: '0640'
       no_log: true
 
-    - name: Enable and start venv-salt-minion service
+    - name: Enable and start Uyuni Salt Minion
       ansible.builtin.systemd:
         name: venv-salt-minion
-        state: started
         enabled: true
+        state: started
 
-    - name: Clean up temporary DEB staging directory
-      ansible.builtin.file:
-        path: "{{ target_staging_dir }}"
-        state: absent
+    - name: Verify Uyuni Salt Minion service
+      ansible.builtin.command:
+        argv:
+          - systemctl
+          - is-active
+          - venv-salt-minion
+      register: minion_service
+      changed_when: false
+      failed_when: minion_service.stdout != "active"
+
+    - name: Display installation result
+      ansible.builtin.debug:
+        msg:
+          - "Uyuni client installation completed."
+          - "Packages transferred: {{ transferred_packages.matched }}"
+          - "Installation directory: {{ target_staging_dir }}"
+          - "Minion service: {{ minion_service.stdout }}"
