@@ -1,3 +1,4 @@
+
 ---
 - name: Offline Install and Configure Uyuni Client
   hosts: all
@@ -7,18 +8,72 @@
   vars:
     target_staging_dir: "/tmp/uyuni_offline"
 
+  pre_tasks:
+
+    - name: Check offline package directory on AWX controller
+      ansible.builtin.stat:
+        path: "{{ playbook_dir }}/files"
+      delegate_to: localhost
+      become: false
+      register: offline_package_dir
+
+    - name: Validate offline package directory
+      ansible.builtin.assert:
+        that:
+          - offline_package_dir.stat.exists
+          - offline_package_dir.stat.isdir
+        fail_msg: >-
+          ERROR: The files directory is missing on the AWX controller.
+          Expected location: {{ playbook_dir }}/files/
+
+    - name: Find offline DEB packages on AWX controller
+      ansible.builtin.find:
+        paths: "{{ playbook_dir }}/files"
+        patterns: "*.deb"
+        file_type: file
+        recurse: false
+      delegate_to: localhost
+      become: false
+      register: offline_deb_files
+
+    - name: Validate offline DEB packages
+      ansible.builtin.assert:
+        that:
+          - offline_deb_files.matched | int > 0
+        fail_msg: >-
+          ERROR: No .deb packages found in {{ playbook_dir }}/files/
+
+    - name: Display package count
+      ansible.builtin.debug:
+        msg: "Found {{ offline_deb_files.matched }} offline DEB packages."
+
   tasks:
+
     - name: Create temporary staging directory on target hosts
       ansible.builtin.file:
         path: "{{ target_staging_dir }}"
         state: directory
         mode: '0755'
 
-    - name: Copy offline .deb packages from project to target hosts
+    - name: Copy offline DEB packages from AWX controller
       ansible.builtin.copy:
         src: "{{ playbook_dir }}/files/"
         dest: "{{ target_staging_dir }}/"
         mode: '0644'
+        directory_mode: '0755'
+
+    - name: Verify packages were transferred
+      ansible.builtin.find:
+        paths: "{{ target_staging_dir }}"
+        patterns: "*.deb"
+        file_type: file
+      register: transferred_packages
+
+    - name: Validate transferred packages
+      ansible.builtin.assert:
+        that:
+          - transferred_packages.matched | int == offline_deb_files.matched | int
+        fail_msg: "DEB package transfer verification failed."
 
     - name: Install venv-salt-minion packages offline
       ansible.builtin.shell: |
@@ -26,9 +81,9 @@
       args:
         executable: /bin/bash
       register: dpkg_install
-      changed_when: "'Setting up venv-salt-minion' in dpkg_install.stdout"
+      changed_when: dpkg_install.rc == 0
 
-    - name: Ensure /etc/venv-salt-minion/minion.d directory exists
+    - name: Ensure minion configuration directory exists
       ansible.builtin.file:
         path: /etc/venv-salt-minion/minion.d
         state: directory
@@ -45,8 +100,9 @@
 
           grains:
             susemanager:
-              activation_key: "1-333f40a929544534b88f430ac55db6c4"
+              activation_key: "{{ uyuni_activation_key }}"
         mode: '0640'
+      no_log: true
 
     - name: Enable and start venv-salt-minion service
       ansible.builtin.systemd:
@@ -54,7 +110,7 @@
         state: started
         enabled: true
 
-    - name: Clean up temporary .deb staging files on target
+    - name: Clean up temporary DEB staging directory
       ansible.builtin.file:
         path: "{{ target_staging_dir }}"
         state: absent
