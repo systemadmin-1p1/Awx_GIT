@@ -258,17 +258,26 @@
     # OFFLINE INSTALLATION
     # --------------------------------------------------------
 
-    - name: Install Uyuni Salt Minion using local DEB only
+    - name: Install Uyuni Salt Minion from local DEB
       ansible.builtin.command:
         argv:
-          - apt-get
-          - --yes
-          - --no-download
-          - --no-install-recommends
-          - install
-          - "{{ target_deb }}"
+          - dpkg
+          - --install
+          - /root/uyuni_offline/venv-salt-minion.deb
       register: minion_install
       changed_when: minion_install.rc == 0
+      become: true
+
+    - name: Verify Uyuni Salt Minion installation
+      ansible.builtin.command:
+        argv:
+          - dpkg-query
+          - -W
+          - "-f=${Status}"
+          - venv-salt-minion
+      register: package_status
+      changed_when: false
+      failed_when: package_status.stdout | trim != "install ok installed"
       become: true
 
     # --------------------------------------------------------
