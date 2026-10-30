@@ -1,189 +1,220 @@
 
 ---
 # ============================================================
-# PLAY 1: DOWNLOAD OFFLINE PACKAGES ON AWX EXECUTION ENVIRONMENT
+# PLAY 1: DOWNLOAD UYUNI REPOSITORY KEY ON AWX
 # ============================================================
 
-- name: Download Uyuni Salt Minion packages on AWX
+- name: Prepare Uyuni repository signing key on AWX
   hosts: localhost
   connection: local
   gather_facts: false
   become: false
 
   vars:
-    awx_package_dir: "/tmp/uyuni_offline"
+    awx_stage_dir: "/tmp/uyuni-client-tools"
 
-    # Replace these example URLs with the actual downloadable
-    # package URLs for your Ubuntu 24.04 / Linux Lite 7.8 client.
-    # Add every required dependency to this list.
+    uyuni_repo_base_url: "https://download.opensuse.org/repositories/systemsmanagement:/Uyuni:/Master:/Ubuntu2404-Uyuni-Client-Tools/xUbuntu_24.04"
 
-    uyuni_deb_packages:
-      - filename: "venv-salt-minion_VERSION.deb"
-        url: "https://YOUR-PACKAGE-SERVER/venv-salt-minion_VERSION.deb"
-
-      - filename: "DEPENDENCY-01_VERSION.deb"
-        url: "https://YOUR-PACKAGE-SERVER/DEPENDENCY-01_VERSION.deb"
-
-      - filename: "DEPENDENCY-02_VERSION.deb"
-        url: "https://YOUR-PACKAGE-SERVER/DEPENDENCY-02_VERSION.deb"
+    awx_release_key: "/tmp/uyuni-client-tools/Release.key"
 
   tasks:
 
-    - name: Validate package download definitions
-      ansible.builtin.assert:
-        that:
-          - item.filename is match('^[A-Za-z0-9._+~-]+[.]deb$')
-          - item.url is match('^https?://')
-          - "'YOUR-PACKAGE-SERVER' not in item.url"
-        fail_msg: "Invalid package filename or download URL: {{ item.filename }}"
-      loop: "{{ uyuni_deb_packages }}"
-      loop_control:
-        label: "{{ item.filename }}"
-
-    - name: Create package directory on AWX execution environment
+    - name: Create temporary directory on AWX
       ansible.builtin.file:
-        path: "{{ awx_package_dir }}"
+        path: "{{ awx_stage_dir }}"
         state: directory
         mode: "0755"
 
-    - name: Make package information available to target play
-      ansible.builtin.set_fact:
-        uyuni_awx_package_dir: "{{ awx_package_dir }}"
-        uyuni_deb_package_manifest: "{{ uyuni_deb_packages }}"
-
-    - name: Download offline DEB packages on AWX
+    - name: Download Uyuni repository Release.key
       ansible.builtin.get_url:
-        url: "{{ item.url }}"
-        dest: "{{ awx_package_dir }}/{{ item.filename }}"
+        url: "{{ uyuni_repo_base_url }}/Release.key"
+        dest: "{{ awx_release_key }}"
         mode: "0644"
         validate_certs: true
-      loop: "{{ uyuni_deb_packages }}"
-      loop_control:
-        label: "{{ item.filename }}"
+        force: true
 
-    - name: Verify downloaded packages on AWX
+    - name: Verify downloaded repository key
       ansible.builtin.stat:
-        path: "{{ awx_package_dir }}/{{ item.filename }}"
-      loop: "{{ uyuni_deb_packages }}"
-      loop_control:
-        label: "{{ item.filename }}"
-      register: awx_package_checks
+        path: "{{ awx_release_key }}"
+      register: awx_key_check
 
-    - name: Validate downloaded package files
+    - name: Validate repository key
       ansible.builtin.assert:
         that:
-          - item.stat.exists
-          - item.stat.isreg
-          - item.stat.size | int > 0
-        fail_msg: "Package download missing or empty: {{ item.item.filename }}"
-      loop: "{{ awx_package_checks.results }}"
-      loop_control:
-        label: "{{ item.item.filename }}"
+          - awx_key_check.stat.exists
+          - awx_key_check.stat.isreg
+          - awx_key_check.stat.size | int > 0
+        fail_msg: "Uyuni repository signing key is missing or empty."
 
-    - name: Display AWX download summary
+    - name: Display AWX preparation result
       ansible.builtin.debug:
         msg:
-          - "AWX package download completed successfully."
-          - "Packages downloaded: {{ uyuni_deb_packages | length }}"
-          - "AWX package directory: {{ awx_package_dir }}"
+          - "Uyuni repository key downloaded successfully."
+          - "AWX location: {{ awx_release_key }}"
+          - "File size: {{ awx_key_check.stat.size }} bytes"
 
 
 # ============================================================
-# PLAY 2: TRANSFER AND INSTALL ON TARGET LINUX CLIENTS
+# PLAY 2: CONFIGURE REPOSITORY AND INSTALL UYUNI CLIENT
 # ============================================================
 
-- name: Transfer and install Uyuni Salt Minion on clients
+- name: Install and register Uyuni Salt Minion on Ubuntu clients
   hosts: "all:!localhost"
-  gather_facts: false
+  gather_facts: true
   become: false
   serial: 5
 
   vars:
-    target_staging_dir: "/root/uyuni_offline"
+
+    # AWX source
+    awx_release_key: "/tmp/uyuni-client-tools/Release.key"
+
+    # Client configuration
+    target_keyring_dir: "/etc/apt/keyrings"
+    target_keyring_file: "/etc/apt/keyrings/uyuni-client-tools.asc"
+    target_repo_file: "/etc/apt/sources.list.d/uyuni-client-tools.list"
+
+    # Uyuni repository
+    uyuni_repo_base_url: "https://download.opensuse.org/repositories/systemsmanagement:/Uyuni:/Master:/Ubuntu2404-Uyuni-Client-Tools/xUbuntu_24.04"
+
+    # Uyuni server and activation key
     uyuni_master: "uyuni.1point1.in"
-    cleanup_target_packages: true
+    uyuni_activation_key: "1-ubuntu-24.04-pool-amd64-uyuni"
 
   pre_tasks:
 
-    - name: Check SSH and Python connectivity
-      ansible.builtin.ping:
-      changed_when: false
-
-    - name: Verify target supports Debian package installation
-      ansible.builtin.command:
-        argv:
-          - dpkg
-          - --version
-      register: dpkg_check
-      changed_when: false
-      failed_when: dpkg_check.rc != 0
-
-    - name: Verify AWX package manifest is available
+    - name: Validate Ubuntu 24.04 AMD64 operating system
       ansible.builtin.assert:
         that:
-          - hostvars['localhost']['uyuni_deb_package_manifest'] is defined
-          - hostvars['localhost']['uyuni_deb_package_manifest'] | length > 0
-          - hostvars['localhost']['uyuni_awx_package_dir'] is defined
-        fail_msg: "AWX package download information is missing."
+          - ansible_facts['os_family'] == "Debian"
+          - ansible_facts['distribution_version'] == "24.04"
+          - ansible_facts['architecture'] == "x86_64"
+        fail_msg: >-
+          Unsupported operating system.
+          This playbook is intended for Ubuntu 24.04
+          and Linux Lite 7.x AMD64 clients.
+
+    - name: Verify Uyuni activation key is configured
+      ansible.builtin.assert:
+        that:
+          - uyuni_activation_key | length > 0
+          - uyuni_master | length > 0
+        fail_msg: "Uyuni server or activation key is missing."
+
+    - name: Verify AWX downloaded repository key exists
+      ansible.builtin.stat:
+        path: "{{ awx_release_key }}"
+      delegate_to: localhost
+      become: false
+      register: controller_key_check
+
+    - name: Validate AWX repository key
+      ansible.builtin.assert:
+        that:
+          - controller_key_check.stat.exists
+          - controller_key_check.stat.isreg
+          - controller_key_check.stat.size | int > 0
+        fail_msg: "Repository key is missing from AWX execution environment."
+
+    - name: Check connection to Uyuni Salt Master port 4505
+      ansible.builtin.wait_for:
+        host: "{{ uyuni_master }}"
+        port: 4505
+        state: started
+        timeout: 15
+        connect_timeout: 5
+
+    - name: Check connection to Uyuni Salt Master port 4506
+      ansible.builtin.wait_for:
+        host: "{{ uyuni_master }}"
+        port: 4506
+        state: started
+        timeout: 15
+        connect_timeout: 5
 
   tasks:
 
-    - name: Create package directory on target client
+    # --------------------------------------------------------
+    # REPOSITORY SIGNING KEY
+    # --------------------------------------------------------
+
+    - name: Create APT keyring directory
       ansible.builtin.file:
-        path: "{{ target_staging_dir }}"
+        path: "{{ target_keyring_dir }}"
         state: directory
         owner: root
         group: root
-        mode: "0700"
+        mode: "0755"
       become: true
 
-    - name: Transfer offline DEB packages from AWX to target
+    - name: Copy repository Release.key from AWX to client
       ansible.builtin.copy:
-        src: "{{ hostvars['localhost']['uyuni_awx_package_dir'] }}/{{ item.filename }}"
-        dest: "{{ target_staging_dir }}/{{ item.filename }}"
+        src: "{{ awx_release_key }}"
+        dest: "{{ target_keyring_file }}"
         owner: root
         group: root
         mode: "0644"
-      loop: "{{ hostvars['localhost']['uyuni_deb_package_manifest'] }}"
-      loop_control:
-        label: "{{ item.filename }}"
       become: true
 
-    - name: Verify transferred DEB packages on target
+    - name: Verify repository key on client
       ansible.builtin.stat:
-        path: "{{ target_staging_dir }}/{{ item.filename }}"
-      loop: "{{ hostvars['localhost']['uyuni_deb_package_manifest'] }}"
-      loop_control:
-        label: "{{ item.filename }}"
-      register: target_package_checks
+        path: "{{ target_keyring_file }}"
+      register: target_key_check
       become: true
 
-    - name: Validate target package files
+    - name: Validate client repository key
       ansible.builtin.assert:
         that:
-          - item.stat.exists
-          - item.stat.isreg
-          - item.stat.size | int > 0
-        fail_msg: "Package transfer failed: {{ item.item.filename }}"
-      loop: "{{ target_package_checks.results }}"
-      loop_control:
-        label: "{{ item.item.filename }}"
+          - target_key_check.stat.exists
+          - target_key_check.stat.isreg
+          - target_key_check.stat.size | int > 0
+        fail_msg: "Unable to transfer Uyuni repository signing key."
 
-    - name: Display successful package transfer
-      ansible.builtin.debug:
-        msg:
-          - "Target: {{ inventory_hostname }}"
-          - "Packages transferred: {{ target_package_checks.results | length }}"
-          - "Package location: {{ target_staging_dir }}"
+    # --------------------------------------------------------
+    # CONFIGURE UYUNI APT REPOSITORY
+    # --------------------------------------------------------
 
-    - name: Install all offline DEB packages on target
-      ansible.builtin.command:
-        argv: "{{ ['/usr/bin/dpkg', '-i'] + (target_package_checks.results | map(attribute='stat.path') | list) }}"
-      register: dpkg_install
-      changed_when: dpkg_install.rc == 0
+    - name: Configure Uyuni Ubuntu 24.04 client tools repository
+      ansible.builtin.copy:
+        dest: "{{ target_repo_file }}"
+        content: |
+          deb [arch=amd64 signed-by={{ target_keyring_file }}] {{ uyuni_repo_base_url }}/ ./
+        owner: root
+        group: root
+        mode: "0644"
+      register: uyuni_repo_config
       become: true
 
-    - name: Ensure Uyuni minion configuration directory exists
+    # --------------------------------------------------------
+    # PACKAGE INDEX UPDATE
+    # --------------------------------------------------------
+
+    - name: Refresh APT package indexes
+      ansible.builtin.apt:
+        update_cache: true
+        cache_valid_time: 0
+        lock_timeout: 300
+      register: apt_update
+      become: true
+
+    # --------------------------------------------------------
+    # INSTALL UYUNI SALT MINION
+    # --------------------------------------------------------
+
+    - name: Install venv-salt-minion from Uyuni repository
+      ansible.builtin.apt:
+        name: venv-salt-minion
+        state: present
+        update_cache: false
+        lock_timeout: 300
+      register: minion_install
+      become: true
+
+    # --------------------------------------------------------
+    # CONFIGURE UYUNI ACTIVATION KEY AND MASTER
+    # --------------------------------------------------------
+
+    - name: Create Uyuni Salt Minion configuration directory
       ansible.builtin.file:
         path: /etc/venv-salt-minion/minion.d
         state: directory
@@ -192,29 +223,54 @@
         mode: "0755"
       become: true
 
-    - name: Deploy Uyuni minion configuration
+    - name: Configure Uyuni Salt Minion
       ansible.builtin.copy:
         dest: /etc/venv-salt-minion/minion.d/uyuni.conf
         content: |
           master: {{ uyuni_master }}
-          server_id_use_crc: adler32
-          enable_legacy_startup_events: False
-          enable_fqdns_grains: False
 
           grains:
             susemanager:
               activation_key: "{{ uyuni_activation_key }}"
+
+          server_id_use_crc: adler32
+          enable_legacy_startup_events: False
+          enable_fqdns_grains: False
         owner: root
         group: root
         mode: "0640"
-      no_log: true
+      register: minion_config
       become: true
+      notify: Restart Uyuni Salt Minion
+
+    # --------------------------------------------------------
+    # ENABLE AND START SERVICE
+    # --------------------------------------------------------
 
     - name: Enable and start Uyuni Salt Minion
       ansible.builtin.systemd:
         name: venv-salt-minion
-        state: started
         enabled: true
+        state: started
+      become: true
+
+    - name: Apply configuration changes
+      ansible.builtin.meta: flush_handlers
+
+    # --------------------------------------------------------
+    # FINAL VERIFICATION
+    # --------------------------------------------------------
+
+    - name: Verify Uyuni Salt Minion package
+      ansible.builtin.command:
+        argv:
+          - dpkg-query
+          - -W
+          - "-f=${Status}"
+          - venv-salt-minion
+      register: package_status
+      changed_when: false
+      failed_when: package_status.stdout | trim != "install ok installed"
       become: true
 
     - name: Verify Uyuni Salt Minion service
@@ -223,25 +279,31 @@
           - systemctl
           - is-active
           - venv-salt-minion
-      register: minion_status
+      register: service_status
       changed_when: false
-      failed_when: minion_status.stdout | trim != "active"
-      become: true
-
-    - name: Clean transferred DEB packages after successful installation
-      ansible.builtin.file:
-        path: "{{ item.stat.path }}"
-        state: absent
-      loop: "{{ target_package_checks.results }}"
-      loop_control:
-        label: "{{ item.item.filename }}"
-      when: cleanup_target_packages | bool
+      failed_when: service_status.stdout | trim != "active"
       become: true
 
     - name: Display final installation result
       ansible.builtin.debug:
         msg:
-          - "SUCCESS: Uyuni client installation completed."
-          - "Target: {{ inventory_hostname }}"
-          - "Packages installed: {{ target_package_checks.results | length }}"
-          - "Minion service: {{ minion_status.stdout | trim }}"
+          - "=========================================="
+          - "UYUNI CLIENT INSTALLATION COMPLETED"
+          - "=========================================="
+          - "Client: {{ inventory_hostname }}"
+          - "OS: {{ ansible_facts['distribution'] }} {{ ansible_facts['distribution_version'] }}"
+          - "Architecture: {{ ansible_facts['architecture'] }}"
+          - "Package status: {{ package_status.stdout | trim }}"
+          - "Service status: {{ service_status.stdout | trim }}"
+          - "Uyuni Master: {{ uyuni_master }}"
+          - "Activation Key: {{ uyuni_activation_key }}"
+          - "=========================================="
+
+  handlers:
+
+    - name: Restart Uyuni Salt Minion
+      ansible.builtin.systemd:
+        name: venv-salt-minion
+        state: restarted
+        enabled: true
+      become: true
