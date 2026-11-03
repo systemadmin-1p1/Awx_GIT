@@ -1,0 +1,618 @@
+---
+# ============================================================
+# PLAY 1: DOWNLOAD UYUNI PACKAGE ON AWX
+# AWX HAS INTERNET ACCESS
+# CLIENTS DO NOT NEED INTERNET ACCESS
+# ============================================================
+
+- name: Download Uyuni Salt Minion package on AWX
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  become: false
+
+  vars:
+    awx_stage_dir: "/tmp/uyuni_offline"
+
+    uyuni_repo_url: "https://download.opensuse.org/repositories/systemsmanagement:/Uyuni:/Master:/Ubuntu2404-Uyuni-Client-Tools/xUbuntu_24.04"
+
+    awx_packages_index: "/tmp/uyuni_offline/Packages.gz"
+    awx_venv_deb: "/tmp/uyuni_offline/venv-salt-minion.deb"
+
+  tasks:
+
+    - name: Create temporary package directory on AWX
+      ansible.builtin.file:
+        path: "{{ awx_stage_dir }}"
+        state: directory
+        mode: "0755"
+
+    - name: Download Uyuni repository package index
+      ansible.builtin.get_url:
+        url: "{{ uyuni_repo_url }}/Packages.gz"
+        dest: "{{ awx_packages_index }}"
+        mode: "0644"
+        force: true
+        validate_certs: true
+
+    - name: Find current AMD64 venv-salt-minion package metadata
+      ansible.builtin.command:
+        argv:
+          - python3
+          - -c
+          - |
+            import gzip
+            import json
+            import re
+            import sys
+
+            with gzip.open(sys.argv[1], "rt", encoding="utf-8") as source:
+                content = source.read()
+
+            for block in content.split("\n\n"):
+                fields = {}
+
+                for line in block.splitlines():
+                    if line.startswith((" ", "\t")):
+                        continue
+
+                    if ": " in line:
+                        key, value = line.split(": ", 1)
+                        fields[key] = value.strip()
+
+                if (
+                    fields.get("Package") == "venv-salt-minion"
+                    and fields.get("Architecture") == "amd64"
+                ):
+                    filename = fields.get("Filename", "")
+                    checksum = fields.get("SHA256", "")
+
+                    if (
+                        not filename
+                        or filename.startswith("/")
+                        or ".." in filename.split("/")
+                        or not re.fullmatch(r"[a-fA-F0-9]{64}", checksum)
+                    ):
+                        raise SystemExit("Invalid package metadata")
+
+                    print(json.dumps({
+                        "filename": filename,
+                        "sha256": checksum,
+                        "version": fields.get("Version", ""),
+                        "architecture": fields.get("Architecture", ""),
+                        "depends": fields.get("Depends", ""),
+                        "size": fields.get("Size", "")
+                    }))
+
+                    sys.exit(0)
+
+            raise SystemExit("venv-salt-minion AMD64 package not found")
+          - "{{ awx_packages_index }}"
+      register: package_metadata
+      changed_when: false
+
+    - name: Store package metadata on AWX
+      ansible.builtin.set_fact:
+        uyuni_package_record: "{{ package_metadata.stdout | from_json }}"
+
+    - name: Validate package metadata
+      ansible.builtin.assert:
+        that:
+          - uyuni_package_record.architecture == "amd64"
+          - uyuni_package_record.filename | length > 0
+          - uyuni_package_record.sha256 | length == 64
+          - uyuni_package_record.version | length > 0
+        fail_msg: "Invalid venv-salt-minion package metadata."
+
+    - name: Display selected package version
+      ansible.builtin.debug:
+        msg:
+          - "Package: venv-salt-minion"
+          - "Version: {{ uyuni_package_record.version }}"
+          - "Architecture: {{ uyuni_package_record.architecture }}"
+          - "Size: {{ uyuni_package_record.size }} bytes"
+
+    - name: Download venv-salt-minion DEB package on AWX
+      ansible.builtin.get_url:
+        url: "{{ uyuni_repo_url }}/{{ uyuni_package_record.filename | regex_replace('^\\./', '') }}"
+        dest: "{{ awx_venv_deb }}"
+        mode: "0644"
+        force: true
+        validate_certs: true
+        checksum: "sha256:{{ uyuni_package_record.sha256 }}"
+
+    - name: Verify downloaded DEB package
+      ansible.builtin.stat:
+        path: "{{ awx_venv_deb }}"
+        checksum_algorithm: sha256
+      register: awx_deb_check
+
+    - name: Validate downloaded package checksum
+      ansible.builtin.assert:
+        that:
+          - awx_deb_check.stat.exists
+          - awx_deb_check.stat.isreg
+          - awx_deb_check.stat.checksum == uyuni_package_record.sha256
+        fail_msg: "Downloaded DEB package checksum verification failed."
+
+    - name: Store AWX package information for target play
+      ansible.builtin.set_fact:
+        uyuni_awx_deb_path: "{{ awx_venv_deb }}"
+        uyuni_awx_deb_sha256: "{{ uyuni_package_record.sha256 }}"
+        uyuni_awx_deb_version: "{{ uyuni_package_record.version }}"
+
+    - name: Display AWX download result
+      ansible.builtin.debug:
+        msg: "Uyuni Salt Minion downloaded and checksum verified on AWX."
+
+
+# ============================================================
+# PLAY 2: TRANSFER, INSTALL AND CONFIGURE OFFLINE ON CLIENTS
+# CLIENTS DO NOT NEED INTERNET ACCESS
+# ============================================================
+
+- name: Install and configure Uyuni Salt Minion on clients
+  hosts: "all:!localhost"
+  gather_facts: true
+  become: false
+  serial: 5
+
+  vars:
+    target_staging_dir: "/root/uyuni_offline"
+    target_deb: "/root/uyuni_offline/venv-salt-minion.deb"
+
+    uyuni_master: "uyuni.1point1.in"
+    uyuni_master_finger: "b2:95:e0:8d:c9:0e:86:b0:20:ad:30:bd:2e:4c:62:e4:91:e6:9d:5d:0a:45:74:d4:00:ef:d3:e6:73:cf:c1:9a"
+    uyuni_activation_key: "1-ubuntu-24.04-pool-amd64-uyuni"
+
+    # IMPORTANT:
+    # Keep false for already registered/production clients.
+    # Set true only for newly cloned clients that need a new machine ID
+    # and a fresh Salt Bundle identity. Set it per host or for a dedicated
+    # group containing only new, unregistered clones.
+    uyuni_reset_clone_identity: false
+
+    # Optional per-host override. When empty, the FQDN is used for the Salt ID
+    # on a new/reset clone. Existing non-empty Salt IDs are preserved when
+    # uyuni_reset_clone_identity is false.
+    uyuni_minion_id: ""
+
+    uyuni_identity_state_dir: "/var/lib/uyuni-offline-minion"
+    uyuni_identity_state_file: "/var/lib/uyuni-offline-minion/identity-state"
+
+    uyuni_salt_minion_id_file: "/etc/venv-salt-minion/minion_id"
+    uyuni_salt_pki_dir: "/etc/venv-salt-minion/pki"
+
+  pre_tasks:
+
+    - name: Validate Ubuntu 24.04 AMD64 client
+      ansible.builtin.assert:
+        that:
+          - ansible_facts['os_family'] == "Debian"
+          - ansible_facts['architecture'] == "x86_64"
+          - ansible_facts['service_mgr'] == "systemd"
+        fail_msg: "Only AMD64 Debian-family clients using systemd are supported."
+
+    - name: Verify Ubuntu Noble release
+      ansible.builtin.command:
+        argv:
+          - grep
+          - -Eq
+          - "^(VERSION_CODENAME|UBUNTU_CODENAME)=noble$"
+          - /etc/os-release
+      changed_when: false
+      failed_when: false
+      register: noble_check
+
+    - name: Stop if client is not Ubuntu 24.04 based
+      ansible.builtin.assert:
+        that:
+          - noble_check.rc == 0
+        fail_msg: "Client is not based on Ubuntu 24.04 Noble."
+
+    - name: Verify Uyuni package exists on AWX
+      ansible.builtin.stat:
+        path: "{{ hostvars['localhost']['uyuni_awx_deb_path'] }}"
+      delegate_to: localhost
+      become: false
+      register: controller_package
+
+    - name: Validate AWX package
+      ansible.builtin.assert:
+        that:
+          - controller_package.stat.exists
+          - controller_package.stat.size | int > 0
+        fail_msg: "Uyuni package is missing from AWX."
+
+    - name: Verify Uyuni master hostname resolves from the client
+      ansible.builtin.command:
+        argv:
+          - getent
+          - hosts
+          - "{{ uyuni_master }}"
+      register: uyuni_dns_check
+      changed_when: false
+      failed_when: uyuni_dns_check.rc != 0
+
+    - name: Verify Salt publication port 4505 is reachable
+      ansible.builtin.wait_for:
+        host: "{{ uyuni_master }}"
+        port: 4505
+        state: started
+        connect_timeout: 3
+        timeout: 8
+
+    - name: Verify Salt return port 4506 is reachable
+      ansible.builtin.wait_for:
+        host: "{{ uyuni_master }}"
+        port: 4506
+        state: started
+        connect_timeout: 3
+        timeout: 8
+
+    - name: Read current machine ID before any identity change
+      ansible.builtin.command:
+        argv:
+          - cat
+          - /etc/machine-id
+      register: old_machine_id_result
+      changed_when: false
+      failed_when: false
+
+    - name: Read current Salt Bundle minion ID when present
+      ansible.builtin.slurp:
+        src: "{{ uyuni_salt_minion_id_file }}"
+      register: old_minion_id_file
+      failed_when: false
+
+    - name: Set current identity facts
+      ansible.builtin.set_fact:
+        uyuni_old_machine_id: "{{ old_machine_id_result.stdout | default('') | trim }}"
+        uyuni_old_minion_id: >-
+          {{ (old_minion_id_file.content | b64decode | trim)
+             if (old_minion_id_file is defined and old_minion_id_file.content is defined)
+             else '' }}
+        uyuni_client_fqdn: "{{ ansible_facts['fqdn'] | lower }}"
+
+    - name: Determine the Salt Minion ID for this client
+      ansible.builtin.set_fact:
+        uyuni_minion_id_effective: >-
+          {{ uyuni_minion_id | trim
+             if (uyuni_minion_id | default('') | trim | length > 0)
+             else (
+               uyuni_client_fqdn
+               if (uyuni_reset_clone_identity | bool or uyuni_old_minion_id | length == 0)
+               else uyuni_old_minion_id
+             ) }}
+
+    - name: Validate the Salt Minion ID format
+      ansible.builtin.assert:
+        that:
+          - uyuni_minion_id_effective | length >= 3
+          - uyuni_minion_id_effective | length <= 255
+          - uyuni_minion_id_effective is match('^[a-z0-9][a-z0-9.-]*[a-z0-9]$')
+          - "'.' in uyuni_minion_id_effective"
+        fail_msg: >-
+          Salt Minion ID must be a valid, unique FQDN-like identifier.
+          Set uyuni_minion_id per host if the detected FQDN is not suitable.
+
+    - name: Read prior identity state marker when present
+      ansible.builtin.slurp:
+        src: "{{ uyuni_identity_state_file }}"
+      register: identity_state_file
+      failed_when: false
+
+    - name: Determine whether this clone identity was already regenerated
+      ansible.builtin.set_fact:
+        uyuni_identity_state_value: >-
+          {{ (identity_state_file.content | b64decode | trim)
+             if (identity_state_file is defined and identity_state_file.content is defined)
+             else '' }}
+        uyuni_identity_state_expected: "{{ uyuni_old_machine_id }}|{{ uyuni_client_fqdn }}|{{ uyuni_minion_id_effective }}"
+
+    - name: Determine whether identity regeneration is required
+      ansible.builtin.set_fact:
+        uyuni_identity_reset_required: >-
+          {{ (uyuni_reset_clone_identity | bool)
+             and (uyuni_identity_state_value != uyuni_identity_state_expected) }}
+
+    - name: Validate Uyuni master fingerprint format
+      ansible.builtin.assert:
+        that:
+          - uyuni_master_finger is match('^([0-9a-fA-F]{2}:){31}[0-9a-fA-F]{2}$')
+        fail_msg: "uyuni_master_finger must be the 32-byte colon-separated Salt master fingerprint."
+
+    - name: Validate Salt Minion IDs are unique in the current batch
+      ansible.builtin.assert:
+        that:
+          - >-
+            (ansible_play_batch
+             | map('extract', hostvars, 'uyuni_minion_id_effective')
+             | unique | list | length) == (ansible_play_batch | length)
+        fail_msg: >-
+          Two or more clients in this batch resolve to the same Salt Minion ID.
+          Set a unique uyuni_minion_id per host before proceeding.
+      run_once: true
+
+  tasks:
+
+    # --------------------------------------------------------
+    # TRANSFER PACKAGE
+    # --------------------------------------------------------
+
+    - name: Create package staging directory on client
+      ansible.builtin.file:
+        path: "{{ target_staging_dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0700"
+      become: true
+
+    - name: Transfer Uyuni DEB package from AWX to client
+      ansible.builtin.copy:
+        src: "{{ hostvars['localhost']['uyuni_awx_deb_path'] }}"
+        dest: "{{ target_deb }}"
+        owner: root
+        group: root
+        mode: "0644"
+      become: true
+
+    - name: Verify transferred package on client
+      ansible.builtin.stat:
+        path: "{{ target_deb }}"
+        checksum_algorithm: sha256
+      register: target_deb_check
+      become: true
+
+    - name: Validate transferred package checksum
+      ansible.builtin.assert:
+        that:
+          - target_deb_check.stat.exists
+          - target_deb_check.stat.checksum == hostvars['localhost']['uyuni_awx_deb_sha256']
+        fail_msg: "Package transfer or checksum verification failed."
+
+    # --------------------------------------------------------
+    # OFFLINE INSTALLATION
+    # --------------------------------------------------------
+
+    - name: Install Uyuni Salt Minion from local DEB
+      ansible.builtin.command:
+        argv:
+          - dpkg
+          - --install
+          - "{{ target_deb }}"
+      register: minion_install
+      changed_when: minion_install.rc == 0
+      become: true
+
+    - name: Verify Uyuni Salt Minion installation
+      ansible.builtin.command:
+        argv:
+          - dpkg-query
+          - -W
+          - "-f=${Status}"
+          - venv-salt-minion
+      register: package_status
+      changed_when: false
+      failed_when: package_status.stdout | trim != "install ok installed"
+      become: true
+
+    # --------------------------------------------------------
+    # PREPARE A CLONED CLIENT IDENTITY (OPT-IN ONLY)
+    # --------------------------------------------------------
+
+    - name: Stop existing Salt Bundle service before identity reset
+      ansible.builtin.systemd:
+        name: venv-salt-minion.service
+        state: stopped
+      when: uyuni_identity_reset_required | bool
+      become: true
+
+    - name: Remove cloned machine ID file
+      ansible.builtin.file:
+        path: /etc/machine-id
+        state: absent
+      when: uyuni_identity_reset_required | bool
+      become: true
+
+    - name: Remove cloned D-Bus machine ID file
+      ansible.builtin.file:
+        path: /var/lib/dbus/machine-id
+        state: absent
+      when: uyuni_identity_reset_required | bool
+      become: true
+
+    - name: Ensure a fresh D-Bus machine ID
+      ansible.builtin.command:
+        argv:
+          - dbus-uuidgen
+          - --ensure
+      register: dbus_machine_id_setup
+      changed_when: true
+      when: uyuni_identity_reset_required | bool
+      become: true
+
+    - name: Generate the new systemd machine ID
+      ansible.builtin.command:
+        argv:
+          - systemd-machine-id-setup
+      register: machine_id_setup
+      changed_when: true
+      when: uyuni_identity_reset_required | bool
+      become: true
+
+    - name: Read regenerated machine ID
+      ansible.builtin.command:
+        argv:
+          - cat
+          - /etc/machine-id
+      register: new_machine_id_result
+      changed_when: false
+      when: uyuni_identity_reset_required | bool
+      become: true
+
+    - name: Validate regenerated machine ID
+      ansible.builtin.assert:
+        that:
+          - new_machine_id_result.stdout | trim is match('^[0-9a-fA-F]{32}$')
+          - new_machine_id_result.stdout | trim != uyuni_old_machine_id
+        fail_msg: >-
+          Machine ID regeneration failed or returned the previous ID.
+          Do not start the Salt Minion until this is corrected.
+      when: uyuni_identity_reset_required | bool
+
+    - name: Remove cloned Salt Bundle minion ID file
+      ansible.builtin.file:
+        path: "{{ uyuni_salt_minion_id_file }}"
+        state: absent
+      when: uyuni_identity_reset_required | bool
+      become: true
+
+    - name: Remove cloned Salt Bundle PKI identity
+      ansible.builtin.file:
+        path: "{{ uyuni_salt_pki_dir }}"
+        state: absent
+      when: uyuni_identity_reset_required | bool
+      become: true
+
+    # --------------------------------------------------------
+    # UYUNI CONFIGURATION
+    # --------------------------------------------------------
+
+    - name: Create Uyuni configuration directory
+      ansible.builtin.file:
+        path: /etc/venv-salt-minion/minion.d
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+      become: true
+
+    - name: Configure Uyuni Salt Minion with a stable unique ID
+      ansible.builtin.copy:
+        dest: /etc/venv-salt-minion/minion.d/uyuni.conf
+        content: |
+          master: {{ uyuni_master }}
+          master_finger: "{{ uyuni_master_finger }}"
+          id: "{{ uyuni_minion_id_effective }}"
+          server_id_use_crc: adler32
+          enable_legacy_startup_events: False
+          enable_fqdns_grains: False
+
+          grains:
+            susemanager:
+              activation_key: "{{ uyuni_activation_key }}"
+        owner: root
+        group: root
+        mode: "0640"
+      no_log: true
+      register: minion_configuration
+      become: true
+
+    # --------------------------------------------------------
+    # START SERVICE
+    # --------------------------------------------------------
+
+    - name: Enable and start Uyuni Salt Minion
+      ansible.builtin.systemd:
+        name: venv-salt-minion.service
+        enabled: true
+        state: restarted
+      become: true
+
+    # --------------------------------------------------------
+    # VERIFICATION
+    # --------------------------------------------------------
+
+    - name: Verify package installation
+      ansible.builtin.command:
+        argv:
+          - dpkg-query
+          - -W
+          - "-f=${Status}"
+          - venv-salt-minion
+      register: package_status_final
+      changed_when: false
+      failed_when: package_status_final.stdout | trim != "install ok installed"
+      become: true
+
+    - name: Verify minion service
+      ansible.builtin.command:
+        argv:
+          - systemctl
+          - is-active
+          - venv-salt-minion.service
+      register: service_status
+      changed_when: false
+      failed_when: service_status.stdout | trim != "active"
+      become: true
+
+    - name: Read final machine ID
+      ansible.builtin.command:
+        argv:
+          - cat
+          - /etc/machine-id
+      register: final_machine_id
+      changed_when: false
+      become: true
+
+    - name: Create identity state directory
+      ansible.builtin.file:
+        path: "{{ uyuni_identity_state_dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0700"
+      when: uyuni_reset_clone_identity | bool
+      become: true
+
+    - name: Record completed clone identity preparation
+      ansible.builtin.copy:
+        dest: "{{ uyuni_identity_state_file }}"
+        content: "{{ final_machine_id.stdout | trim }}|{{ uyuni_client_fqdn }}|{{ uyuni_minion_id_effective }}\n"
+        owner: root
+        group: root
+        mode: "0600"
+      when: uyuni_reset_clone_identity | bool
+      become: true
+
+    # --------------------------------------------------------
+    # CLEANUP
+    # --------------------------------------------------------
+
+    - name: Remove temporary DEB package after successful installation
+      ansible.builtin.file:
+        path: "{{ target_staging_dir }}"
+        state: absent
+      become: true
+
+    - name: Display final installation report
+      ansible.builtin.debug:
+        msg:
+          - "=========================================="
+          - "UYUNI OFFLINE INSTALLATION COMPLETED"
+          - "=========================================="
+          - "Client: {{ inventory_hostname }}"
+          - "Hostname/FQDN: {{ uyuni_client_fqdn }}"
+          - "Machine ID: {{ final_machine_id.stdout | trim }}"
+          - "Salt Minion ID: {{ uyuni_minion_id_effective }}"
+          - "Identity reset performed: {{ uyuni_identity_reset_required }}"
+          - "OS: {{ ansible_facts['distribution'] }} {{ ansible_facts['distribution_version'] }}"
+          - "Package: venv-salt-minion"
+          - "Version: {{ hostvars['localhost']['uyuni_awx_deb_version'] }}"
+          - "Package status: {{ package_status_final.stdout | trim }}"
+          - "Service status: {{ service_status.stdout | trim }}"
+          - "Uyuni master: {{ uyuni_master }}"
+          - "Activation key: {{ uyuni_activation_key }}"
+          - "=========================================="
+          - "Check the Uyuni Web UI for the pending/accepted Salt key."
+          - "A running service alone does not prove that the master accepted the key."
+
+    - name: Display stale-key handling reminder after identity reset
+      ansible.builtin.debug:
+        msg:
+          - "Identity was regenerated for {{ uyuni_minion_id_effective }}."
+          - "If Uyuni still has an old/stale key under this exact Minion ID, remove only that stale key on Uyuni before accepting the new pending key."
+          - "Do not delete the key or system record belonging to another/original client."
+      when: uyuni_identity_reset_required | bool
