@@ -200,6 +200,78 @@
           - noble_check.rc == 0
         fail_msg: "Client is not based on Ubuntu 24.04 Noble."
 
+    - name: Check whether Uyuni Salt Minion package is already installed
+      ansible.builtin.command:
+        argv:
+          - dpkg-query
+          - -W
+          - "-f=${Status}"
+          - venv-salt-minion
+      register: existing_uyuni_package_status
+      changed_when: false
+      failed_when: false
+      become: true
+
+    - name: Check whether the Uyuni configuration file exists
+      ansible.builtin.stat:
+        path: /etc/venv-salt-minion/minion.d/uyuni.conf
+      register: existing_uyuni_config_stat
+      become: true
+
+    - name: Read the existing Uyuni configuration
+      ansible.builtin.slurp:
+        src: /etc/venv-salt-minion/minion.d/uyuni.conf
+      register: existing_uyuni_config
+      when: existing_uyuni_config_stat.stat.exists
+      become: true
+
+    - name: Check whether the Uyuni Salt Minion service is active
+      ansible.builtin.command:
+        argv:
+          - systemctl
+          - is-active
+          - venv-salt-minion
+      register: existing_uyuni_service_status
+      changed_when: false
+      failed_when: false
+      become: true
+
+    - name: Determine whether this client is already configured for Uyuni
+      ansible.builtin.set_fact:
+        uyuni_already_configured: >-
+          {{
+            (existing_uyuni_package_status.stdout | default('') | trim == 'install ok installed')
+            and (existing_uyuni_config_stat.stat.exists | default(false))
+            and (existing_uyuni_service_status.stdout | default('') | trim == 'active')
+            and (
+              (existing_uyuni_config.content | default('') | b64decode) ==
+              (
+                'master: ' ~ uyuni_master ~ '\n'
+                ~ 'server_id_use_crc: adler32\n'
+                ~ 'enable_legacy_startup_events: False\n'
+                ~ 'enable_fqdns_grains: False\n'
+                ~ '\n'
+                ~ 'grains:\n'
+                ~ '  susemanager:\n'
+                ~ '    activation_key: "' ~ uyuni_activation_key ~ '"\n'
+              )
+            )
+            and not (uyuni_reset_clone_identity | bool)
+          }}
+
+    - name: Display already-configured Uyuni client status
+      ansible.builtin.debug:
+        msg: >-
+          SKIPPED: {{ inventory_hostname }} already has venv-salt-minion installed,
+          the Uyuni master and activation key configuration match, and the
+          venv-salt-minion service is active. No client package or configuration
+          changes will be made.
+      when: uyuni_already_configured | bool
+
+    - name: Skip remaining tasks for an already-configured Uyuni client
+      ansible.builtin.meta: end_host
+      when: uyuni_already_configured | bool
+
     - name: Verify Uyuni package exists on AWX
       ansible.builtin.stat:
         path: "{{ hostvars['localhost']['uyuni_awx_deb_path'] }}"
