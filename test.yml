@@ -145,7 +145,8 @@
 
 - name: Install and configure Uyuni Salt Minion on clients
   hosts: "all:!localhost"
-  gather_facts: true
+  # Delay fact gathering until AWX has checked the target SSH endpoint.
+  gather_facts: false
   become: false
   serial: 5
 
@@ -170,6 +171,71 @@
     uyuni_salt_pki_dir: "/etc/venv-salt-minion/pki"
 
   pre_tasks:
+    # --------------------------------------------------------
+    # SSH PREFLIGHT FROM AWX
+    # This runs on the AWX execution environment, before any
+    # remote task or fact gathering. It gives a clear diagnosis
+    # when the target SSH port is closed/refusing connections.
+    # Set ansible_host / ansible_port / ansible_user in AWX
+    # inventory/credentials as required for each target.
+    # --------------------------------------------------------
+
+    - name: Display the SSH endpoint selected by AWX inventory
+      ansible.builtin.debug:
+        msg:
+          - "Inventory host: {{ inventory_hostname }}"
+          - "SSH destination: {{ ansible_host | default(inventory_hostname) }}"
+          - "SSH port: {{ ansible_port | default(22) }}"
+          - "SSH user: {{ ansible_user | default('user from AWX credential or SSH config') }}"
+
+    - name: Check target SSH TCP port from AWX before connecting
+      ansible.builtin.wait_for:
+        host: "{{ ansible_host | default(inventory_hostname) }}"
+        port: "{{ ansible_port | default(22) | int }}"
+        state: started
+        connect_timeout: 3
+        sleep: 2
+        timeout: 8
+      delegate_to: localhost
+      become: false
+      register: ssh_tcp_preflight
+      ignore_errors: true
+      changed_when: false
+
+    - name: Stop with a clear message when target SSH port is unavailable
+      ansible.builtin.fail:
+        msg: >-
+          AWX cannot open SSH to {{ ansible_host | default(inventory_hostname) }}:
+          {{ ansible_port | default(22) }}. The earlier error was
+          'Connection refused'. This is not a Salt Minion or YAML task failure:
+          the target is refusing TCP SSH connections. Verify that ssh.service
+          is running on the target, that the target IP is correct, that the
+          SSH port matches ansible_port, and that the network/firewall permits
+          AWX to reach that port. No client changes have been made by this play.
+      when: >-
+        (ssh_tcp_preflight is failed)
+        or (ssh_tcp_preflight.state | default('') != 'started')
+
+    - name: Verify Ansible SSH authentication and remote command execution
+      ansible.builtin.ping:
+      register: ssh_login_preflight
+      ignore_unreachable: true
+      ignore_errors: true
+
+    - name: Stop with a clear message when SSH authentication fails
+      ansible.builtin.fail:
+        msg: >-
+          TCP SSH port is reachable, but Ansible could not authenticate or run
+          its ping module on {{ inventory_hostname }}. Check the AWX machine
+          credential, SSH username, private key, authorized_keys, and remote
+          Python availability. No installation or identity changes have run.
+      when: >-
+        (ssh_login_preflight is failed)
+        or (ssh_login_preflight.unreachable | default(false))
+
+    - name: Gather client facts after SSH preflight succeeds
+      ansible.builtin.setup:
+
     - name: Validate Ubuntu 24.04 AMD64 client
       ansible.builtin.assert:
         that:
