@@ -159,7 +159,7 @@
 
     # Set TRUE only for a newly cloned/unregistered client whose identity
     # must be regenerated. Leave FALSE for already registered production hosts.
-    uyuni_reset_clone_identity: false
+    uyuni_reset_clone_identity: true
 
     # Marker makes identity reset idempotent on the same hostname. If a VM is
     # cloned after this playbook has run, the changed hostname causes a new reset.
