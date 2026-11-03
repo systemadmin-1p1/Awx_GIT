@@ -266,6 +266,64 @@
     # OFFLINE INSTALLATION
     # --------------------------------------------------------
 
+    # --------------------------------------------------------
+    # TARGETED PRE-REQUISITE RECOVERY
+    # The reported dpkg failure says gnupg is present but not
+    # configured. Configure ONLY gnupg; do not run dpkg --configure -a
+    # because other pending packages may have unrelated install hooks.
+    # --------------------------------------------------------
+
+    - name: Check current gnupg package status
+      ansible.builtin.command:
+        argv:
+          - dpkg-query
+          - -W
+          - "-f=${Status}"
+          - gnupg
+      register: gnupg_status_before
+      changed_when: false
+      failed_when: false
+      become: true
+
+    - name: Stop if gnupg is not installed on the client
+      ansible.builtin.assert:
+        that:
+          - gnupg_status_before.rc == 0
+          - >-
+            (gnupg_status_before.stdout | trim) in
+            ['install ok installed', 'install ok unpacked',
+             'install ok half-configured', 'install ok triggers-awaited',
+             'install ok triggers-pending']
+        fail_msg: >-
+          The venv-salt-minion package depends on gnupg, but gnupg is missing
+          or is in an unsupported dpkg state on this client. No package upgrade
+          or bulk dpkg repair was attempted. Check dpkg-query for gnupg and
+          provide its required dependency packages through the AWX offline bundle.
+      become: true
+
+    - name: Configure only gnupg when it is unpacked or not yet configured
+      ansible.builtin.command:
+        argv:
+          - dpkg
+          - --configure
+          - gnupg
+      register: gnupg_configure
+      changed_when: gnupg_configure.rc == 0
+      when: (gnupg_status_before.stdout | trim) != 'install ok installed'
+      become: true
+
+    - name: Verify gnupg is fully configured
+      ansible.builtin.command:
+        argv:
+          - dpkg-query
+          - -W
+          - "-f=${Status}"
+          - gnupg
+      register: gnupg_status_after
+      changed_when: false
+      failed_when: gnupg_status_after.stdout | trim != 'install ok installed'
+      become: true
+
     - name: Install Uyuni Salt Minion from local DEB
       ansible.builtin.command:
         argv:
