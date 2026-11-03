@@ -1,9 +1,6 @@
 ---
 # ============================================================
 # PLAY 1: DOWNLOAD UYUNI PACKAGE ON AWX
-# AWX HAS INTERNET ACCESS
-# CLIENTS DO NOT NEED INTERNET ACCESS
-# Original offline download and checksum workflow preserved.
 # ============================================================
 
 - name: Download Uyuni Salt Minion package on AWX
@@ -139,8 +136,6 @@
 
 # ============================================================
 # PLAY 2: TRANSFER, INSTALL AND CONFIGURE OFFLINE ON CLIENTS
-# ORIGINAL SALT CONNECTION CONFIGURATION IS PRESERVED.
-# CLIENTS DO NOT NEED INTERNET ACCESS.
 # ============================================================
 
 - name: Install and configure Uyuni Salt Minion on clients
@@ -150,22 +145,25 @@
   serial: 5
 
   vars:
+    # --------------------------------------------------------
+    # EXPLICIT SSH CONNECTION FORCING
+    # Bypasses local container SSH configs and forces IPv4 port 22
+    # --------------------------------------------------------
+    ansible_connection: ssh
+    ansible_port: 22
+    ansible_ssh_extra_args: "-4 -F /dev/null -o StrictHostKeyChecking=no"
+
     target_staging_dir: "/root/uyuni_offline"
     target_deb: "/root/uyuni_offline/venv-salt-minion.deb"
 
     uyuni_master: "uyuni.1point1.in"
     uyuni_activation_key: "1-ubuntu-24.04-pool-amd64-uyuni"
 
-    # Set TRUE only for a newly cloned/unregistered client whose identity
-    # must be regenerated. Leave FALSE for already registered production hosts.
     uyuni_reset_clone_identity: true
 
-    # Marker makes identity reset idempotent on the same hostname. If a VM is
-    # cloned after this playbook has run, the changed hostname causes a new reset.
     uyuni_identity_state_dir: "/var/lib/uyuni-offline-minion"
     uyuni_identity_state_file: "/var/lib/uyuni-offline-minion/identity-reset.done"
 
-    # Salt Bundle paths documented by Uyuni.
     uyuni_salt_minion_id_file: "/etc/venv-salt-minion/minion_id"
     uyuni_salt_pki_dir: "/etc/venv-salt-minion/pki"
 
@@ -209,8 +207,6 @@
           - controller_package.stat.size | int > 0
         fail_msg: "Uyuni package is missing from AWX."
 
-    # Preserve the original working connectivity pre-check. No additional
-    # mandatory TCP 4505/4506 probes or Salt master fingerprint override.
     - name: Verify Uyuni master hostname resolves
       ansible.builtin.command:
         argv:
@@ -223,10 +219,7 @@
 
     # --------------------------------------------------------
     # OPTIONAL CLONE IDENTITY REGENERATION
-    # Runs only when uyuni_reset_clone_identity=true for that host.
-    # The original machine must NOT have this variable enabled.
     # --------------------------------------------------------
-
     - name: Read current machine ID
       ansible.builtin.command:
         argv:
@@ -405,9 +398,8 @@
 
   tasks:
     # --------------------------------------------------------
-    # TRANSFER PACKAGE (ORIGINAL WORKFLOW PRESERVED)
+    # TRANSFER PACKAGE
     # --------------------------------------------------------
-
     - name: Create package staging directory on client
       ansible.builtin.file:
         path: "{{ target_staging_dir }}"
@@ -441,9 +433,8 @@
         fail_msg: "Package transfer or checksum verification failed."
 
     # --------------------------------------------------------
-    # OFFLINE INSTALLATION (ORIGINAL WORKFLOW PRESERVED)
+    # OFFLINE INSTALLATION
     # --------------------------------------------------------
-
     - name: Install Uyuni Salt Minion from local DEB
       ansible.builtin.command:
         argv:
@@ -468,10 +459,7 @@
 
     # --------------------------------------------------------
     # UYUNI CONFIGURATION
-    # EXACT ORIGINAL WORKING CONNECTION BLOCK:
-    # no forced id and no master_finger override.
     # --------------------------------------------------------
-
     - name: Create Uyuni configuration directory
       ansible.builtin.file:
         path: /etc/venv-salt-minion/minion.d
@@ -501,9 +489,8 @@
       become: true
 
     # --------------------------------------------------------
-    # START SERVICE (ORIGINAL WORKFLOW PRESERVED)
+    # START SERVICE
     # --------------------------------------------------------
-
     - name: Enable and start Uyuni Salt Minion
       ansible.builtin.systemd:
         name: venv-salt-minion
@@ -514,7 +501,6 @@
     # --------------------------------------------------------
     # VERIFICATION
     # --------------------------------------------------------
-
     - name: Verify package installation
       ansible.builtin.command:
         argv:
@@ -558,9 +544,8 @@
       become: true
 
     # --------------------------------------------------------
-    # CLEANUP (ORIGINAL WORKFLOW PRESERVED)
+    # CLEANUP
     # --------------------------------------------------------
-
     - name: Remove temporary DEB package after successful installation
       ansible.builtin.file:
         path: "{{ target_staging_dir }}"
