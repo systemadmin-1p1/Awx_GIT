@@ -9,7 +9,7 @@
   hosts: localhost
   connection: local
   gather_facts: false
-  become: true
+  become: yes
 
   vars:
     awx_stage_dir: "/tmp/uyuni_offline"
